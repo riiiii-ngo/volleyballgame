@@ -76,6 +76,10 @@ function initState(playerName, position) {
       matchHistory: [],       // 試合履歴（詳細）
     },
 
+    // --- ファン数 ---
+    // 試合の勝敗・内容に応じて増減する
+    fans: 0,
+
     // --- 進行管理 ---
     // 今週に行動を実行済みかどうか
     actionTakenThisWeek: false,
@@ -89,6 +93,18 @@ function initState(playerName, position) {
 
     // ゲームが終了（エンディング到達）したかどうか
     isEnding: false,
+
+    // --- 試合中の一時状態（試合画面でのみ使用）---
+    // コート上のプレイヤーX位置（-1.0 〜 +1.0）
+    playerX: 0,
+    // 今の試合のプレー統計（試合終了後にリザルトで表示）
+    currentMatchStats: {
+      spikeAttempts: 0,   // スパイク試みた回数
+      spikeSuccess: 0,    // スパイク成功回数
+      receiveAttempts: 0, // レシーブ試みた回数
+      receiveSuccess: 0,  // レシーブ成功回数
+      pointContrib: 0,    // 得点への直接貢献数
+    },
   };
 }
 
@@ -381,6 +397,72 @@ function triggerEnding() {
  */
 function setScheduledMatch(matchEvent) {
   _state.currentScheduledMatch = matchEvent;
+}
+
+// =============================================================
+// ファン数の更新
+// =============================================================
+
+/**
+ * ファン数を増減させる。
+ * 0を下回らないようにクランプする。
+ *
+ * @param {number} amount - 変化量（正で増加、負で減少）
+ */
+function changeFans(amount) {
+  _state.fans = Math.max(0, _state.fans + amount);
+}
+
+// =============================================================
+// 試合中プレー統計の更新
+// =============================================================
+
+/**
+ * 試合開始時にプレー統計をリセットする。
+ */
+function resetMatchStats() {
+  _state.currentMatchStats = {
+    spikeAttempts: 0,
+    spikeSuccess: 0,
+    receiveAttempts: 0,
+    receiveSuccess: 0,
+    pointContrib: 0,
+  };
+  _state.playerX = 0; // コート上のX位置もリセット
+}
+
+/**
+ * スパイク統計を更新する。
+ * @param {boolean} success - 成功したか
+ */
+function recordSpike(success) {
+  _state.currentMatchStats.spikeAttempts++;
+  if (success) {
+    _state.currentMatchStats.spikeSuccess++;
+    _state.currentMatchStats.pointContrib++;
+  }
+}
+
+/**
+ * レシーブ統計を更新する。
+ * @param {boolean} success - 成功したか
+ */
+function recordReceive(success) {
+  _state.currentMatchStats.receiveAttempts++;
+  if (success) _state.currentMatchStats.receiveSuccess++;
+}
+
+/**
+ * プレイヤーのコート上X位置を更新する。
+ * PLAYER_MOVE.MIN_X 〜 MAX_X にクランプする。
+ *
+ * @param {number} dx - 移動量（正で右、負で左）
+ */
+function movePlayerX(dx) {
+  _state.playerX = Math.max(
+    PLAYER_MOVE.MIN_X,
+    Math.min(PLAYER_MOVE.MAX_X, _state.playerX + dx)
+  );
 }
 
 // =============================================================

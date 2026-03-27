@@ -416,3 +416,123 @@ const COMMENT_SET_LOSE = [
   "1セット失った。しかし諦めるな！",
   "相手に流れを持っていかれた。立て直せ！",
 ];
+
+// =============================================================
+// ★ インタラクティブ試合システム追加定数
+// =============================================================
+
+/**
+ * ラリーのフェーズ定義（状態機械で使用）
+ * SERVE       : サーブ待機（試合開始・ポイント後）
+ * RECEIVE     : レシーブ（相手サーブを返す）
+ * SET         : トス待機（自動進行）
+ * ATTACK      : スパイク方向選択
+ * OPP_RETURN  : 相手の返球（自動進行）
+ * POINT       : 得点演出（一時停止）
+ */
+const MATCH_PHASE = {
+  SERVE:      "SERVE",
+  RECEIVE:    "RECEIVE",
+  SET:        "SET",
+  ATTACK:     "ATTACK",
+  OPP_RETURN: "OPP_RETURN",
+  POINT:      "POINT",
+};
+
+/**
+ * フェーズごとのコマンドボタン定義
+ * id         : 内部識別子
+ * label      : ボタン表示名
+ * successMod : 成功率への補正（正で有利、負で不利）
+ * description: 効果説明（ツールチップ用）
+ */
+const PHASE_COMMANDS = {
+  // レシーブ時コマンド
+  [MATCH_PHASE.RECEIVE]: [
+    { id: "stable",  label: "安定",   successMod:  0.10, description: "確実につなぐ" },
+    { id: "strong",  label: "強め",   successMod:  0.05, description: "強くはじく（ミスリスク増）" },
+    { id: "connect", label: "つなぐ", successMod:  0.15, description: "次の攻撃につなげる" },
+    { id: "dive",    label: "ダイブ", successMod: -0.05, description: "無理な体勢で拾う" },
+  ],
+  // スパイク時コマンド
+  [MATCH_PHASE.ATTACK]: [
+    { id: "straight", label: "ストレート", successMod:  0.10, description: "直線的な強打" },
+    { id: "cross",    label: "クロス",     successMod:  0.05, description: "斜め方向への打球" },
+    { id: "inner",    label: "インナー",   successMod:  0.00, description: "ブロックの内側へ" },
+    { id: "feint",    label: "フェイント", successMod: -0.05, description: "軟打でブロックをかわす" },
+  ],
+  // サーブ時コマンド
+  [MATCH_PHASE.SERVE]: [
+    { id: "jump_serve",   label: "ジャンプ",   successMod:  0.10, description: "強力なジャンプサーブ" },
+    { id: "float_serve",  label: "フローター", successMod:  0.05, description: "変化する無回転サーブ" },
+    { id: "short_serve",  label: "ショート",   successMod:  0.00, description: "前に落とす奇襲サーブ" },
+    { id: "safe_serve",   label: "安全",       successMod: -0.10, description: "確実に入れる" },
+  ],
+};
+
+/**
+ * プレイヤーの横移動（コート上のX位置）設定
+ * 単位はコート上の相対値（-1.0 〜 +1.0）
+ */
+const PLAYER_MOVE = {
+  SPEED:     0.04,  // 1フレームあたりの移動量
+  MIN_X:    -0.85,  // 移動できる左端
+  MAX_X:     0.85,  // 移動できる右端
+  IDEAL_TOL: 0.25,  // この範囲内なら「良いポジション」と判定する許容誤差
+};
+
+/**
+ * 各フェーズの制限時間（ミリ秒）
+ * 時間内にコマンドを選ばないと自動でデフォルト選択される
+ */
+const PHASE_TIMEOUT = {
+  [MATCH_PHASE.SERVE]:      2000,  // サーブ：2秒
+  [MATCH_PHASE.RECEIVE]:    3000,  // レシーブ：3秒
+  [MATCH_PHASE.SET]:        1000,  // トス：1秒（自動）
+  [MATCH_PHASE.ATTACK]:     3500,  // スパイク：3.5秒
+  [MATCH_PHASE.OPP_RETURN]: 1500,  // 相手返球：1.5秒（自動）
+  [MATCH_PHASE.POINT]:      1200,  // 得点演出：1.2秒
+};
+
+/**
+ * ファン数の増減テーブル
+ * 試合結果・内容に応じてファン数が変わる
+ */
+const FAN_CHANGE = {
+  win_practice:        200,
+  win_local_league:    500,
+  win_national_league: 1_500,
+  win_local_cup:       3_000,
+  win_national_cup:    8_000,
+  win_world_cup:       30_000,
+  lose:               -100,   // 敗北時は少し減る
+  mvp_bonus:           2_000, // MVP獲得ボーナス
+};
+
+/**
+ * 試合評価グレードの閾値
+ * スパイク成功率・レシーブ成功率・貢献ポイントの合計スコアで判定
+ */
+const GRADE_TABLE = [
+  { grade: "S", minScore: 85, color: "#ffd700", message: "完璧な試合だ！" },
+  { grade: "A", minScore: 70, color: "#40ff80", message: "素晴らしいプレーだった！" },
+  { grade: "B", minScore: 50, color: "#4a9fff", message: "良い試合だった。" },
+  { grade: "C", minScore: 30, color: "#a0c4ff", message: "まだ伸びしろがある。" },
+  { grade: "D", minScore:  0, color: "#ff8080", message: "課題が見えた試合だった。" },
+];
+
+/**
+ * Canvas描画用のコート寸法定数
+ * courtToScreen() 関数で使用する
+ */
+const COURT_DRAW = {
+  CANVAS_W:    800,   // Canvasの幅（px）
+  CANVAS_H:    340,   // Canvasの高さ（px）
+  VP_X:        400,   // 消失点X（中央）
+  VP_Y:         55,   // 消失点Y（上部）
+  NEAR_Y:      320,   // 手前端のY座標（px）
+  FAR_Y:       100,   // 奥端のY座標（px）
+  NEAR_HALF_W: 340,   // 手前端の半幅（px）
+  FAR_HALF_W:  170,   // 奥端の半幅（px）
+  NET_DEPTH:   0.50,  // ネットの奥行き位置（0=手前, 1=奥）
+};

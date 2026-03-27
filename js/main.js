@@ -4,8 +4,8 @@
  *
  * 役割：
  *   - ページ読み込み完了時にゲームを起動する
- *   - 全ボタンにクリックイベントを登録する
- *   - 試合シミュレーションの演出（ログ送り）を制御する
+ *   - 全ボタンにイベントを一括登録する
+ *   - 試合画面の移動ボタン（ポインターホールド）・AUTOトグルを制御する
  *   - 各モジュールを「つなぐ」接着剤の役割を果たす
  *
  * 設計方針：
@@ -22,7 +22,7 @@
  * ページの読み込みが完了したらゲームを起動する。
  */
 window.addEventListener("DOMContentLoaded", () => {
-  // 全ボタンのイベントを登録する
+  // 全ボタンのイベントを一括登録する
   _registerAllEvents();
 
   // タイトル画面を表示する（セーブデータのチェックも内部で行う）
@@ -43,11 +43,10 @@ function _registerAllEvents() {
   document.getElementById("btn-continue").addEventListener("click", onContinue);
 
   // --- 選手作成画面 ---
-  // ポジションボタン（複数）は querySelectorAll でまとめて登録する
-  document.querySelectorAll(".position-btn").forEach((btn) => {
+  // ポジションボタン：タップで選択状態を切り替える
+  document.querySelectorAll(".pos-btn").forEach((btn) => {
     btn.addEventListener("click", () => {
-      // 選択済みクラスを一度全部外してから、押したボタンだけに付ける
-      document.querySelectorAll(".position-btn").forEach((b) => b.classList.remove("selected"));
+      document.querySelectorAll(".pos-btn").forEach((b) => b.classList.remove("selected"));
       btn.classList.add("selected");
     });
   });
@@ -66,8 +65,13 @@ function _registerAllEvents() {
   // --- 成長画面 ---
   document.getElementById("btn-growth-back").addEventListener("click", onGrowthBack);
 
+  // --- 試合画面：移動ボタン（ポインターホールド対応）---
+  _registerMoveButtons();
+
+  // --- 試合画面：AUTO トグル ---
+  document.getElementById("btn-auto-toggle").addEventListener("click", onAutoToggle);
+
   // --- 試合結果画面 ---
-  document.getElementById("btn-match-result").addEventListener("click", onMatchResult);
   document.getElementById("btn-result-next").addEventListener("click", onResultNext);
 
   // --- エンディング画面 ---
@@ -88,7 +92,7 @@ function onNewGame() {
 
 /** 「コンティニュー」ボタン */
 function onContinue() {
-  const success = loadGame(); // save.js でロード処理を行う
+  const success = loadGame();
   if (success) {
     openMain();
   } else {
@@ -102,7 +106,7 @@ function onContinue() {
 
 /** 「ゲームスタート」ボタン */
 function onStartGame() {
-  // 名前を取得して空欄チェックをする
+  // 名前の空欄チェックをする
   const name = document.getElementById("input-name").value.trim();
   if (!name) {
     alert("選手名を入力してください。");
@@ -111,7 +115,7 @@ function onStartGame() {
   }
 
   // 選択中のポジションを取得する
-  const selectedBtn = document.querySelector(".position-btn.selected");
+  const selectedBtn = document.querySelector(".pos-btn.selected");
   const position    = selectedBtn ? selectedBtn.dataset.position : "エース";
 
   // 状態を初期化してゲームを開始する
@@ -126,7 +130,7 @@ function onStartGame() {
 /** 「トレーニング」ボタン */
 function onGoTraining() {
   const state = getState();
-  if (state.actionTakenThisWeek) return; // 行動済みなら何もしない
+  if (state.actionTakenThisWeek) return;
   openTraining();
 }
 
@@ -143,7 +147,7 @@ function onGoMatch() {
   const matchEvent = state.currentScheduledMatch;
   if (!matchEvent) return;
 
-  // 試合画面を開いてシミュレーションを開始する
+  // 試合画面を開いてインタラクティブエンジンを起動する
   openMatch(matchEvent.matchType, matchEvent.label);
 }
 
@@ -152,31 +156,25 @@ function onNextWeek() {
   // progress.js で週を進めて発生イベントを取得する
   const result = advanceToNextWeek();
 
-  // ゲームオーバー判定
   if (result.isGameOver) {
     const state = getState();
     openGameOver(state.gameOverReason);
     return;
   }
 
-  // エンディング判定
   if (result.isEnding) {
     openEnding(result.endingId);
     return;
   }
 
-  // 通常進行：メイン画面に戻る（状態を最新に更新して再描画）
+  // 通常進行：メイン画面を最新状態で再描画する
   openMain();
 }
 
 /** 「セーブ」ボタン */
 function onSave() {
   const success = saveGame();
-  if (success) {
-    _showToast("セーブしました");
-  } else {
-    _showToast("セーブに失敗しました", true);
-  }
+  _showToast(success ? "セーブしました" : "セーブに失敗しました", !success);
 }
 
 // =============================================================
@@ -184,17 +182,15 @@ function onSave() {
 // =============================================================
 
 /**
- * トレーニングカードをクリックした時の処理。
+ * トレーニングカードをクリックしたときの処理。
  * ui.js の uiRenderTrainingCards() からカード生成時に登録される。
  *
  * @param {string} trainingId - 選択したトレーニングのID
  */
 function onTrainingCardClick(trainingId) {
-  // training.js でトレーニングを実行する
   const result = executeTraining(trainingId);
 
   if (!result.success) {
-    // 故障やゲームオーバーの場合
     if (result.isGameOver) {
       openGameOver(result.reason);
       return;
@@ -203,9 +199,9 @@ function onTrainingCardClick(trainingId) {
     return;
   }
 
-  // 成功時：結果をポップアップで表示してからメイン画面に戻る
+  // 成功時：結果を短く通知してメイン画面に戻る
   const gpMsg   = result.gpGained > 0 ? `\n成長ポイント +${result.gpGained} GP` : "";
-  const warnMsg = result.injuryWarning ? "\n⚠️ 疲労が高いです。休息を取ることをお勧めします。" : "";
+  const warnMsg = result.injuryWarning ? "\n⚠️ 疲労が高いです。休息をお勧めします。" : "";
   alert(`${result.trainingName} 完了！${gpMsg}${warnMsg}`);
 
   openMain();
@@ -226,126 +222,55 @@ function onGrowthBack() {
 }
 
 // =============================================================
-// 試合画面のイベント・試合シミュレーション演出
+// 試合画面のイベント
 // =============================================================
 
-// 試合結果を一時保存する変数（結果画面に渡すため）
-let _lastMatchResult  = null;
-let _lastRewardResult = null;
-let _lastMatchLabel   = "";
-
 /**
- * 試合シミュレーションを開始する。
- * screens.js の openMatch() から呼ばれる。
- * ラリーログを一定間隔で1件ずつ表示する演出を行う。
- *
- * @param {string} matchType  - 試合種別
- * @param {string} matchLabel - 試合名
+ * 移動ボタン（◀ ▶）のポインターホールドイベントを登録する。
+ * pointerdown で押しっぱなし開始、pointerup/pointerleave で解除。
+ * match.js の startMove / stopMove を呼ぶ。
  */
-function startMatchSimulation(matchType, matchLabel) {
-  // --- 試合ロジックを一括実行する ---
-  const matchResult = simulateMatch(matchType);
+function _registerMoveButtons() {
+  const btnLeft  = document.getElementById("btn-move-left");
+  const btnRight = document.getElementById("btn-move-right");
 
-  // --- 試合結果を state.js に記録する ---
-  recordMatchResult({
-    win:          matchResult.win,
-    matchType:    matchType,
-    opponentName: matchResult.opponent.name,
-    score:        matchResult.scoreText,
-    mvp:          matchResult.mvp,
+  // 左ボタン
+  btnLeft.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    btnLeft.classList.add("pressed");
+    startMove("left");
   });
+  btnLeft.addEventListener("pointerup",    () => { btnLeft.classList.remove("pressed");  stopMove("left");  });
+  btnLeft.addEventListener("pointerleave", () => { btnLeft.classList.remove("pressed");  stopMove("left");  });
 
-  // --- 報酬を付与する ---
-  const rewardResult = grantMatchReward(matchType, matchResult.win);
-
-  // --- 後で結果画面に渡すために保存しておく ---
-  _lastMatchResult  = matchResult;
-  _lastRewardResult = rewardResult;
-  _lastMatchLabel   = matchLabel;
-
-  // --- 対戦相手名を画面に反映する ---
-  document.getElementById("match-opponent-name").textContent =
-    `vs. ${matchResult.opponent.name}`;
-
-  // --- ラリーログを1件ずつ時間差で表示する演出 ---
-  _playMatchAnimation(matchResult);
+  // 右ボタン
+  btnRight.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    btnRight.classList.add("pressed");
+    startMove("right");
+  });
+  btnRight.addEventListener("pointerup",    () => { btnRight.classList.remove("pressed"); stopMove("right"); });
+  btnRight.addEventListener("pointerleave", () => { btnRight.classList.remove("pressed"); stopMove("right"); });
 }
 
-/**
- * ラリーログを1件ずつ時間差で表示するアニメーション処理。
- * 全ログを表示し終えたら「結果へ」ボタンを表示する。
- *
- * @param {Object} matchResult - simulateMatch() の戻り値
- */
-function _playMatchAnimation(matchResult) {
-  const logs = matchResult.allRallies;
-
-  // ログ表示の間隔（ms）。ラリー数が多いほど短くする
-  const interval = logs.length > 80 ? 40 : logs.length > 50 ? 60 : 80;
-
-  let index      = 0;
-  let myScore    = 0;
-  let oppScore   = 0;
-  let currentSet = 1;
-
-  const timer = setInterval(() => {
-    if (index >= logs.length) {
-      // 全ログを表示し終えたらタイマーを止めて「結果へ」ボタンを出す
-      clearInterval(timer);
-      uiShowMatchResultButton();
-      return;
-    }
-
-    const log = logs[index];
-    index++;
-
-    if (log.isSetResult) {
-      // セット終了ログ：セットバッジを追加してログに区切りを入れる
-      const setResult = matchResult.sets[currentSet - 1];
-      uiAddSetBadge(
-        currentSet,
-        log.myWon,
-        setResult ? setResult.myScore : 0,
-        setResult ? setResult.oppScore : 0
-      );
-      uiAddMatchLog(log.comment, "set-result");
-      currentSet++;
-
-      // 次のセットのためにスコアをリセットする
-      myScore  = 0;
-      oppScore = 0;
-      uiUpdateMatchScore(myScore, oppScore);
-    } else {
-      // 通常ラリーログ：スコアを更新してコメントを追加する
-      if (log.myPoint) {
-        myScore++;
-        uiAddMatchLog(log.comment, "score-my");
-      } else {
-        oppScore++;
-        uiAddMatchLog(log.comment, "score-opp");
-      }
-      uiUpdateMatchScore(myScore, oppScore);
-    }
-  }, interval);
-}
-
-/** 試合画面の「試合結果へ」ボタン */
-function onMatchResult() {
-  if (!_lastMatchResult) return;
-  openResult(_lastMatchResult, _lastRewardResult, _lastMatchLabel);
+/** 「AUTO」トグルボタン */
+function onAutoToggle() {
+  const isAuto = toggleAutoMode();
+  uiUpdateAutoButton(isAuto);
 }
 
 // =============================================================
 // 試合結果画面のイベント
 // =============================================================
 
-/** 「育成画面へもどる」ボタン */
+/** 「育成画面へ ▶」ボタン */
 function onResultNext() {
-  // 行動済みフラグを立てる（試合も1週の行動として扱う）
+  // 試合を「今週の行動」として記録する
   markActionTaken();
 
-  // ゲームオーバーチェック（試合後に資金がなくなっている可能性がある）
   const state = getState();
+
+  // 試合後のゲームオーバーチェック（賞金で資金がゼロになった等）
   if (state.isGameOver) {
     openGameOver(state.gameOverReason);
     return;
@@ -360,7 +285,6 @@ function onResultNext() {
 
 /** 「もう一度プレイ」ボタン（エンディング・ゲームオーバー共通） */
 function onRestart() {
-  // セーブデータを削除して最初からやり直す
   deleteSaveData();
   openTitle();
 }
@@ -370,14 +294,14 @@ function onRestart() {
 // =============================================================
 
 /**
- * 画面下部に一時的なメッセージを表示する。
- * 2秒後に自動で消える。
+ * 画面中央下部に一時的なメッセージを表示する。
+ * 1.5秒後に自動でフェードアウトして消える。
  *
  * @param {string}  message - 表示するメッセージ
- * @param {boolean} isError - エラー表示なら true（赤色になる）
+ * @param {boolean} isError - true にすると赤背景（エラー用）
  */
 function _showToast(message, isError = false) {
-  // 既存のトーストがあれば削除する
+  // 既存のトーストがあれば先に削除する
   const existing = document.getElementById("toast-message");
   if (existing) existing.remove();
 
@@ -385,22 +309,22 @@ function _showToast(message, isError = false) {
   toast.id = "toast-message";
   toast.textContent = message;
 
-  // トーストのスタイルをインラインで設定する
   Object.assign(toast.style, {
-    position:        "absolute",
-    bottom:          "100px",
-    left:            "50%",
-    transform:       "translateX(-50%)",
-    padding:         "10px 24px",
-    background:      isError ? "rgba(200,40,40,0.95)" : "rgba(26,111,219,0.95)",
-    color:           "#ffffff",
-    borderRadius:    "20px",
-    fontSize:        "14px",
-    fontWeight:      "bold",
-    zIndex:          "200",
-    pointerEvents:   "none",
-    boxShadow:       "0 4px 16px rgba(0,0,0,0.4)",
-    transition:      "opacity 0.3s ease",
+    position:      "absolute",
+    bottom:        "80px",
+    left:          "50%",
+    transform:     "translateX(-50%)",
+    padding:       "10px 24px",
+    background:    isError ? "rgba(200,40,40,0.95)" : "rgba(26,80,200,0.95)",
+    color:         "#ffffff",
+    borderRadius:  "20px",
+    fontSize:      "13px",
+    fontWeight:    "bold",
+    zIndex:        "200",
+    pointerEvents: "none",
+    boxShadow:     "0 4px 16px rgba(0,0,0,0.5)",
+    transition:    "opacity 0.3s ease",
+    whiteSpace:    "nowrap",
   });
 
   document.getElementById("game-container").appendChild(toast);
