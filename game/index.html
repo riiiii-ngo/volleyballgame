@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=800">
+  <title>バレーボール選手育成ゲーム</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<!-- ============================================================
+  ゲームコンテナ
+  すべての画面はこの中に収まる（800×600固定）
+  ============================================================ -->
+<div id="game-container">
+
+  <!-- ==========================================================
+    【画面1】タイトル画面
+    ゲーム起動時に最初に表示される画面
+    ========================================================== -->
+  <div id="screen-title" class="screen active">
+    <div class="title-volleyball">🏐</div>
+    <div class="title-logo">
+      <h1>VOLLEY<br>RISING</h1>
+      <p class="subtitle">バレーボール選手育成</p>
+    </div>
+
+    <!-- ニューゲーム・コンティニューボタン -->
+    <div id="title-buttons" style="display:flex; flex-direction:column; gap:14px; align-items:center; margin-top:30px;">
+      <button class="title-btn" id="btn-new-game">ニューゲーム</button>
+      <!-- セーブデータがある場合のみ表示（js側で制御） -->
+      <button class="title-btn" id="btn-continue" style="display:none; font-size:16px; padding:12px 50px;">
+        コンティニュー
+      </button>
+    </div>
+
+    <!-- セーブデータ情報（コンティニュー時に表示） -->
+    <div id="save-info" style="margin-top:16px; font-size:13px; color:#6080a0; display:none;">
+      <!-- js側で動的に挿入 -->
+    </div>
+  </div>
+
+  <!-- ==========================================================
+    【画面2】選手作成画面
+    名前とポジションを選んでゲームを開始する
+    ========================================================== -->
+  <div id="screen-create" class="screen">
+    <div class="create-box">
+      <h2>選手を作成する</h2>
+
+      <!-- 選手名入力 -->
+      <div class="create-form-group">
+        <label for="input-name">選手名</label>
+        <input
+          type="text"
+          id="input-name"
+          class="create-input"
+          placeholder="名前を入力..."
+          maxlength="10"
+        >
+      </div>
+
+      <!-- ポジション選択 -->
+      <div class="create-form-group">
+        <label>ポジション</label>
+        <div class="position-group">
+          <button class="position-btn selected" data-position="エース">🏐 エース</button>
+          <button class="position-btn" data-position="セッター">🎯 セッター</button>
+          <button class="position-btn" data-position="リベロ">🛡️ リベロ</button>
+          <button class="position-btn" data-position="ミドル">💪 ミドル</button>
+          <button class="position-btn" data-position="オポジット">⚡ オポジット</button>
+          <button class="position-btn" data-position="ウイング">🌪️ ウイング</button>
+        </div>
+      </div>
+
+      <!-- ゲームスタートボタン -->
+      <button class="create-start-btn" id="btn-start-game">ゲームスタート</button>
+    </div>
+  </div>
+
+  <!-- ==========================================================
+    【画面3】メイン育成画面
+    週単位でトレーニング・試合・休息を選ぶメイン画面
+    ========================================================== -->
+  <div id="screen-main" class="screen">
+
+    <!-- 上部ヘッダー（選手名・資金・時間） -->
+    <div class="game-header">
+      <span class="header-player-name" id="main-player-name">選手名</span>
+      <div class="header-info">
+        <span id="main-progress-text">1年目 1月 第1週</span>
+        <span class="header-money" id="main-money">¥500,000</span>
+      </div>
+    </div>
+
+    <!-- メインコンテンツ（2カラム構成） -->
+    <div class="main-content" style="display:grid; grid-template-columns:1fr 1fr; grid-template-rows:auto 1fr; gap:10px;">
+
+      <!-- 月間カレンダー（上段・全幅） -->
+      <div class="schedule-panel" style="grid-column:1/-1;">
+        <h3>📅 今月のスケジュール</h3>
+        <div class="schedule-weeks" id="main-calendar">
+          <!-- js側で週セルを動的に生成 -->
+        </div>
+        <!-- 次の試合予告 -->
+        <div id="next-match-notice" style="margin-top:8px; font-size:12px; color:#a0c4ff; min-height:16px;"></div>
+      </div>
+
+      <!-- 能力値パネル（左下） -->
+      <div class="stats-panel">
+        <h3>📊 能力値</h3>
+        <div id="main-stats-list">
+          <!-- js側で能力値バーを動的に生成 -->
+        </div>
+      </div>
+
+      <!-- 状態パネル（右下） -->
+      <div class="status-panel">
+        <h3>⚡ 状態</h3>
+
+        <!-- 疲労度 -->
+        <div class="status-item" style="flex-direction:column; align-items:flex-start; gap:4px;">
+          <div style="display:flex; justify-content:space-between; width:100%;">
+            <span class="status-label">疲労度</span>
+            <span class="status-value" id="main-fatigue-text">良好</span>
+          </div>
+          <div class="fatigue-bar-bg" style="width:100%;">
+            <div class="fatigue-bar-fill" id="main-fatigue-bar" style="width:0%;"></div>
+          </div>
+        </div>
+
+        <!-- 成長ポイント -->
+        <div class="status-item" style="margin-top:8px;">
+          <span class="status-label">成長ポイント（GP）</span>
+          <span class="status-value gp" id="main-gp">0 GP</span>
+        </div>
+
+        <!-- 対戦成績 -->
+        <div style="margin-top:10px;">
+          <div class="stat-category-label">対戦成績</div>
+          <div class="record-table" id="main-record">
+            <!-- js側で動的に生成 -->
+          </div>
+        </div>
+
+        <!-- 行動済み通知 -->
+        <div id="main-action-done-notice"
+             style="display:none; margin-top:10px; padding:8px; background:rgba(255,215,0,0.1);
+                    border:1px solid rgba(255,215,0,0.3); border-radius:6px;
+                    font-size:12px; color:#ffd700; text-align:center;">
+          今週の行動は完了しました。<br>「次の週へ」で進んでください。
+        </div>
+      </div>
+    </div>
+
+    <!-- 下部操作UI（07_UI仕様準拠） -->
+    <div class="bottom-ui">
+      <!-- トレーニングボタン -->
+      <button class="action-btn" id="btn-go-training">
+        <span class="btn-icon">💪</span>
+        <span class="btn-label">トレーニング</span>
+      </button>
+
+      <!-- 成長ポイント振り分けボタン -->
+      <button class="action-btn" id="btn-go-growth">
+        <span class="btn-icon">📈</span>
+        <span class="btn-label">成長 (GP振分)</span>
+      </button>
+
+      <!-- 試合ボタン（試合週のみ有効） -->
+      <button class="action-btn primary" id="btn-go-match" disabled>
+        <span class="btn-icon">🏆</span>
+        <span class="btn-label">試合へ</span>
+      </button>
+
+      <!-- 次の週へボタン -->
+      <button class="action-btn" id="btn-next-week">
+        <span class="btn-icon">⏭️</span>
+        <span class="btn-label">次の週へ</span>
+      </button>
+
+      <!-- セーブボタン -->
+      <button class="action-btn" id="btn-save">
+        <span class="btn-icon">💾</span>
+        <span class="btn-label">セーブ</span>
+      </button>
+    </div>
+  </div>
+
+  <!-- ==========================================================
+    【画面4】トレーニング選択画面
+    トレーニング種別を選んで実行する
+    ========================================================== -->
+  <div id="screen-training" class="screen">
+
+    <!-- ヘッダー -->
+    <div class="game-header">
+      <span class="header-player-name">トレーニング選択</span>
+      <div class="header-info">
+        <span id="training-progress-text">1年目 1月 第1週</span>
+        <span class="header-money" id="training-money">¥500,000</span>
+      </div>
+    </div>
+
+    <!-- トレーニングカード一覧 -->
+    <div class="main-content">
+      <div class="training-title">どのトレーニングをしますか？</div>
+      <!-- 疲労度表示 -->
+      <div style="text-align:center; font-size:13px; color:#a0c4ff; margin-bottom:4px;">
+        現在の疲労度：<span id="training-fatigue-label" style="font-weight:bold;">良好</span>
+        （<span id="training-fatigue-val">0</span>）
+      </div>
+      <div class="training-grid" id="training-card-list">
+        <!-- js側でカードを動的に生成 -->
+      </div>
+    </div>
+
+    <!-- 下部操作UI -->
+    <div class="bottom-ui">
+      <button class="action-btn" id="btn-training-back">
+        <span class="btn-icon">◀️</span>
+        <span class="btn-label">もどる</span>
+      </button>
+    </div>
+  </div>
+
+  <!-- ==========================================================
+    【画面5】成長ポイント振り分け画面
+    GPを能力値に割り振る
+    ========================================================== -->
+  <div id="screen-growth" class="screen">
+
+    <!-- ヘッダー -->
+    <div class="game-header">
+      <span class="header-player-name">成長ポイント振り分け</span>
+      <div class="header-info">
+        <span class="header-money" id="growth-money">¥500,000</span>
+      </div>
+    </div>
+
+    <div class="main-content" style="overflow-y:auto;">
+
+      <!-- GP残量表示 -->
+      <div class="growth-header">
+        <span class="growth-title">能力を強化する</span>
+        <div class="growth-gp-display">
+          残り <span id="growth-gp-remain">0</span> GP
+        </div>
+      </div>
+
+      <!-- 能力値カテゴリ：基礎 -->
+      <div class="growth-category">
+        <div class="growth-category-title">基礎能力</div>
+        <div id="growth-stats-basic">
+          <!-- js側で動的に生成 -->
+        </div>
+      </div>
+
+      <!-- 能力値カテゴリ：プレー -->
+      <div class="growth-category">
+        <div class="growth-category-title">プレー能力</div>
+        <div id="growth-stats-play">
+          <!-- js側で動的に生成 -->
+        </div>
+      </div>
+
+      <!-- 能力値カテゴリ：体格（表示のみ・変更不可） -->
+      <div class="growth-category">
+        <div class="growth-category-title">体格（変更不可）</div>
+        <div id="growth-stats-physique">
+          <!-- js側で動的に生成 -->
+        </div>
+      </div>
+    </div>
+
+    <!-- 下部操作UI -->
+    <div class="bottom-ui">
+      <button class="action-btn" id="btn-growth-back">
+        <span class="btn-icon">◀️</span>
+        <span class="btn-label">もどる</span>
+      </button>
+    </div>
+  </div>
+
+  <!-- ==========================================================
+    【画面6】試合画面
+    試合のシミュレーションを表示する
+    ========================================================== -->
+  <div id="screen-match" class="screen">
+
+    <!-- ヘッダー（試合情報） -->
+    <div class="game-header" style="background:linear-gradient(90deg,#1a3a0a,#2a5a10,#1a3a0a); border-bottom-color:#3a8a20;">
+      <span class="header-player-name" id="match-title">試合</span>
+      <div class="header-info">
+        <span id="match-opponent-name">対戦相手</span>
+      </div>
+    </div>
+
+    <!-- コート表示エリア -->
+    <div class="court-area">
+      <!-- ネット -->
+      <div class="court-net"></div>
+      <!-- スコアボード -->
+      <div class="scoreboard">
+        <span class="my-score" id="match-my-score">0</span>
+        <span class="divider">―</span>
+        <span class="opp-score" id="match-opp-score">0</span>
+      </div>
+      <!-- チームラベル -->
+      <span class="court-team-label my-team" id="match-my-team-label">あなた</span>
+      <span class="court-team-label opp-team" id="match-opp-team-label">相手</span>
+    </div>
+
+    <!-- セットスコア -->
+    <div class="set-score-display" id="match-set-scores">
+      <!-- js側で動的に生成（セットが終わるたびに追加） -->
+    </div>
+
+    <!-- 試合ログ（ラリーコメント） -->
+    <div class="match-log" id="match-log">
+      <!-- js側でラリーコメントを順次追加 -->
+    </div>
+
+    <!-- 下部操作UI（試合中は操作不可、試合終了後に「結果へ」が出る） -->
+    <div class="bottom-ui">
+      <button class="action-btn primary" id="btn-match-result" style="display:none;">
+        <span class="btn-icon">📋</span>
+        <span class="btn-label">試合結果へ</span>
+      </button>
+      <div id="match-in-progress-msg"
+           style="flex:1; text-align:center; color:#a0c4ff; font-size:14px;">
+        試合シミュレーション中...
+      </div>
+    </div>
+  </div>
+
+  <!-- ==========================================================
+    【画面7】試合結果画面
+    勝敗・報酬・獲得GPを表示する
+    ========================================================== -->
+  <div id="screen-result" class="screen">
+    <div class="result-box">
+      <!-- 勝敗タイトル -->
+      <div class="result-title" id="result-title">勝利！</div>
+      <!-- セットスコア -->
+      <div class="result-score" id="result-score">2 - 0</div>
+      <!-- 対戦相手名 -->
+      <div style="font-size:13px; color:#6080a0; margin-bottom:16px;" id="result-opponent">vs. 対戦相手</div>
+
+      <!-- 報酬情報 -->
+      <div class="result-rewards" id="result-rewards">
+        <!-- js側で動的に生成 -->
+      </div>
+
+      <!-- 次へボタン -->
+      <button class="result-next-btn" id="btn-result-next">
+        育成画面へもどる
+      </button>
+    </div>
+  </div>
+
+  <!-- ==========================================================
+    【画面8】エンディング画面
+    3年間の結果を表示する
+    ========================================================== -->
+  <div id="screen-ending" class="screen">
+    <div class="ending-box">
+      <!-- エンディング種別アイコン -->
+      <div class="ending-rank" id="ending-rank">🏆</div>
+      <!-- エンディングタイトル -->
+      <div class="ending-title" id="ending-title">世界チャンピオン</div>
+      <!-- エンディングメッセージ -->
+      <div class="ending-message" id="ending-message">
+        世界大会を制した！
+      </div>
+      <!-- 3年間の成績まとめ -->
+      <div class="ending-stats" id="ending-stats">
+        <!-- js側で動的に生成 -->
+      </div>
+      <!-- もう一度プレイボタン -->
+      <button class="restart-btn" id="btn-restart-from-ending">
+        もう一度プレイ
+      </button>
+    </div>
+  </div>
+
+  <!-- ==========================================================
+    【画面9】ゲームオーバー画面
+    資金切れ・故障などでゲームオーバーになった場合
+    ========================================================== -->
+  <div id="screen-gameover" class="screen">
+    <div class="gameover-box">
+      <div style="font-size:60px; margin-bottom:16px;">💔</div>
+      <div class="gameover-title">GAME OVER</div>
+      <div class="gameover-reason" id="gameover-reason">
+        所持金が尽きてしまった。
+      </div>
+      <!-- もう一度ボタン -->
+      <button class="restart-btn" id="btn-restart-from-gameover" style="margin-top:30px;">
+        もう一度プレイ
+      </button>
+    </div>
+  </div>
+
+</div><!-- /#game-container -->
+
+<!-- ============================================================
+  JavaScriptファイルの読み込み
+  依存関係の順に読み込む（data → state → ... → main）
+  ============================================================ -->
+<script src="js/data.js"></script>      <!-- データ定義（定数・テーブル） -->
+<script src="js/state.js"></script>     <!-- 状態管理 -->
+<script src="js/save.js"></script>      <!-- セーブ・ロード -->
+<script src="js/economy.js"></script>   <!-- お金・報酬処理 -->
+<script src="js/training.js"></script>  <!-- 練習処理 -->
+<script src="js/match.js"></script>     <!-- 試合ロジック -->
+<script src="js/progress.js"></script>  <!-- 全体進行管理 -->
+<script src="js/screens.js"></script>   <!-- 画面切り替え -->
+<script src="js/ui.js"></script>        <!-- UI制御（DOM更新） -->
+<script src="js/main.js"></script>      <!-- 初期化・イベント登録 -->
+
+</body>
+</html>
