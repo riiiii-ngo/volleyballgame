@@ -1,1049 +1,1022 @@
 /**
  * match.js
- * インタラクティブ試合エンジン。
+ * インタラクティブな試合エンジン。
  *
- * 役割：
- *   - Canvas 2.5D コートの描画（courtToScreen による透視変換）
- *   - ラリーフェーズ状態機械（SERVE→RECEIVE→SET→ATTACK→OPP_RETURN→POINT）
- *   - プレイヤーのコート移動、コマンド選択による技術判定
- *   - AUTO モード（自動コマンド選択）
- *   - 試合全体（セット管理・勝敗確定）のフロー制御
- *   - 試合終了後に結果オブジェクトを生成し screens.js へ渡す
+ * フェーズフロー（ラリー内）:
+ *   プレイヤーサーブ時: SERVE → [相手受け自動] → BLOCK または AUTO_RALLY
+ *   相手サーブ時:       RECEIVE → TOSS → SPIKE → [BLOCK or AUTO_RALLY]
+ *   BLOCK(ソフト) 後:   AUTO_RALLY
+ *   POINT 後:           次ラリー開始
  *
- * 設計方針：
- *   - Canvas 描画は drawXxx 系関数に集約する
- *   - state.js の更新関数のみを通してゲーム状態を変更する
- *   - Godot 移植時は MatchEngine.gd + CourtRenderer.gd に相当
+ * 公開 API:
+ *   startMatch(scheduleEntry, opponentEntry, opponentName)
+ *   stopMatch()
+ *   executeCommand(cmdId)
+ *   setMoveLeft(active) / setMoveRight(active)
+ *   toggleAutoMode() / isAutoMode()
+ *   getMatchPhase() / getScore()
+ *
+ * 設計方針:
+ *   - Canvas 2.5D 透視投影（COURT_DRAW 定数を使用）
+ *   - プレイヤー入力は executeCommand / setMoveLeft / setMoveRight の 3 つだけ
+ *   - 計算結果は state.js へ記録し、試合終了時に career.js processMatchEnd() を呼ぶ
  */
 
-// =============================================================
-// モジュール内プライベート変数
-// =============================================================
+// ============================================================
+// モジュール変数
+// ============================================================
 
-/** @type {CanvasRenderingContext2D|null} */
-let _ctx = null;
+let _canvas  = null;
+let _ctx     = null;
+let _rafId   = null;
 
-/** @type {HTMLCanvasElement|null} */
-let _canvas = null;
+let _matchActive = false;
+let _autoMode    = false;
 
-/**
- * 現在のラリーフェーズ
- * @type {string} MATCH_PHASE の値
- */
-let _phase = MATCH_PHASE.SERVE;
-
-/**
- * 各フェーズで選択されたコマンドID
- * @type {string|null}
- */
-let _selectedCommand = null;
-
-/**
- * フェーズ自動進行タイマーID
- * @type {number|null}
- */
-let _phaseTimer = null;
-
-/**
- * AUTO モードが ON かどうか
- * @type {boolean}
- */
-let _autoMode = false;
-
-/**
- * 移動ボタン押下状態（ポインターホールド検出用）
- * @type {{ left: boolean, right: boolean }}
- */
-let _moveHeld = { left: false, right: false };
-
-/**
- * requestAnimationFrame のID（停止用）
- * @type {number|null}
- */
-let _rafId = null;
-
-/**
- * 現在の試合スコア
- * @type {{ mySets: number, oppSets: number, myPts: number, oppPts: number, setNum: number }}
- */
+// スコア
 let _score = {
-  mySets: 0,
-  oppSets: 0,
-  myPts: 0,
-  oppPts: 0,
-  setNum: 1,
+  playerSets:     0,
+  opponentSets:   0,
+  playerPoints:   0,
+  opponentPoints: 0,
 };
 
-/**
- * 対戦相手情報（名前・攻撃力・守備力）
- * @type {{ name: string, attack: number, defense: number }}
- */
-let _opponent = null;
+// 現在のフェーズ
+let _phase = null;
+
+// サーブ権（true = プレイヤーチーム）
+let _playerServes = true;
+
+// 対戦相手情報
+let _opponentName    = "";
+let _opponentAttack  = 50;
+let _opponentDefense = 50;
+
+// 試合メタ情報
+let _scheduleEntry = null;
+
+// ブロッカー配置（SPIKE フェーズ表示用）: -1〜+1 の配列
+let _blockerPositions = [];
+
+// ボール（Canvasピクセル座標）
+let _ball = { x: 400, y: 300, visible: false };
+
+// ボールアニメーション定義
+let _ballAnim = null;
+// { sx, sy, ex, ey, startTime, duration, arcH }
+
+// フェーズタイマー
+let _phaseTimer = null;
+
+// 移動フラグ（main.js の pointerdown/up で制御）
+let _moveLeft  = false;
+let _moveRight = false;
+
+// RECEIVE / BLOCK フェーズでの理想X位置（-1〜+1）
+let _idealX = 0;
+
+// 位置ボーナス（毎フレーム更新 -0.15〜+0.12）
+let _positionBonus = 0;
+
+// フェーズ内演出テキスト（POINT 時など）
+let _phaseText = "";
+
+// ============================================================
+// 公開 API
+// ============================================================
 
 /**
- * 現在の試合種別（MATCH_REWARDS のキー）
- * @type {string}
- */
-let _matchType = null;
-
-/**
- * ボールのCanvas上の描画位置（アニメーション用）
- * @type {{ x: number, y: number, visible: boolean }}
- */
-let _ball = { x: 400, y: 200, visible: false };
-
-/**
- * フェーズオーバーレイ表示中フラグ
- * @type {boolean}
- */
-let _overlayVisible = false;
-
-// =============================================================
-// Canvas 透視変換
-// =============================================================
-
-/**
- * コート座標をCanvas上のスクリーン座標に変換する（2.5D透視変換）。
+ * 試合を開始する。
  *
- * コート座標:
- *   cx: -1.0（左端）〜 +1.0（右端）  ※コート幅を正規化
- *   cy:  0.0（ネット）〜 +1.0（手前）
- *
- * 透視変換の仕組み:
- *   - cy=0（奥=ネット側）→ 消失点（VP_X, VP_Y）付近
- *   - cy=1（手前）        → 画面下（NEAR_Y）のフル幅
- *   線形補間で中間も自然に縮小される。
- *
- * @param {number} cx - コートX座標（-1〜+1）
- * @param {number} cy - コートY座標（0=奥, 1=手前）
- * @returns {{ x: number, y: number }} Canvas上のピクセル座標
+ * @param {Object} scheduleEntry - MATCH_SCHEDULE のエントリ
+ * @param {Object} opponentEntry - OPPONENT_TABLE[matchType] のエントリ
+ * @param {string} opponentName  - 対戦相手名（表示用）
  */
-function courtToScreen(cx, cy) {
-  const d = COURT_DRAW;
-
-  // 奥と手前それぞれの画面Y座標
-  const screenY = d.FAR_Y + (d.NEAR_Y - d.FAR_Y) * cy;
-
-  // 奥と手前それぞれの半幅をcyで補間する
-  const halfW = d.FAR_HALF_W + (d.NEAR_HALF_W - d.FAR_HALF_W) * cy;
-
-  // cx（-1〜+1）を画面幅にマッピング
-  const screenX = d.VP_X + cx * halfW;
-
-  return { x: screenX, y: screenY };
-}
-
-// =============================================================
-// コート描画
-// =============================================================
-
-/**
- * 試合Canvasを1フレーム描画する。
- * requestAnimationFrame から毎フレーム呼ばれる。
- */
-function drawCourt() {
-  if (!_ctx) return;
-  const d = COURT_DRAW;
-
-  // --- 背景クリア ---
-  _ctx.fillStyle = "#060e1a";
-  _ctx.fillRect(0, 0, d.CANVAS_W, d.CANVAS_H);
-
-  // --- コートの地面（グラデーション）---
-  const groundGrad = _ctx.createLinearGradient(0, d.FAR_Y, 0, d.NEAR_Y);
-  groundGrad.addColorStop(0, "#1a3050");
-  groundGrad.addColorStop(1, "#0d1e38");
-  _ctx.fillStyle = groundGrad;
-
-  // 台形の地面を描画（4頂点で台形）
-  _ctx.beginPath();
-  _ctx.moveTo(d.VP_X - d.FAR_HALF_W,  d.FAR_Y);
-  _ctx.lineTo(d.VP_X + d.FAR_HALF_W,  d.FAR_Y);
-  _ctx.lineTo(d.VP_X + d.NEAR_HALF_W, d.NEAR_Y);
-  _ctx.lineTo(d.VP_X - d.NEAR_HALF_W, d.NEAR_Y);
-  _ctx.closePath();
-  _ctx.fill();
-
-  // --- コートライン ---
-  _ctx.strokeStyle = "rgba(80, 140, 240, 0.5)";
-  _ctx.lineWidth = 1.5;
-
-  // サイドライン（左・右）
-  _drawCourtLine(-1, 0, -1, 1);
-  _drawCourtLine( 1, 0,  1, 1);
-
-  // エンドライン（手前）
-  _drawCourtLine(-1, 1, 1, 1);
-
-  // 奥のライン
-  _drawCourtLine(-1, 0, 1, 0);
-
-  // 3mライン（奥から 0.33 の位置）
-  _ctx.strokeStyle = "rgba(80, 140, 240, 0.25)";
-  _drawCourtLine(-1, 0.33, 1, 0.33);
-
-  // --- ネット ---
-  _drawNet();
-
-  // --- プレイヤー ---
-  _drawPlayer();
-
-  // --- 相手チーム（奥側に2体） ---
-  _drawOpponents();
-
-  // --- ボール ---
-  if (_ball.visible) {
-    _drawBall(_ball.x, _ball.y);
-  }
-
-  // --- プレイヤーポジションインジケーター（理想位置） ---
-  _drawPositionIndicator();
-}
-
-/**
- * コート座標で直線を描画するヘルパー。
- *
- * @param {number} cx1 - 始点X
- * @param {number} cy1 - 始点Y
- * @param {number} cx2 - 終点X
- * @param {number} cy2 - 終点Y
- */
-function _drawCourtLine(cx1, cy1, cx2, cy2) {
-  const p1 = courtToScreen(cx1, cy1);
-  const p2 = courtToScreen(cx2, cy2);
-  _ctx.beginPath();
-  _ctx.moveTo(p1.x, p1.y);
-  _ctx.lineTo(p2.x, p2.y);
-  _ctx.stroke();
-}
-
-/**
- * ネットを描画する。
- * ネットはコートY=NET_DEPTH の位置に横一線で引く。
- */
-function _drawNet() {
-  const d = COURT_DRAW;
-  const netDepth = d.NET_DEPTH;
-
-  // ネット支柱の位置
-  const leftPole  = courtToScreen(-1, netDepth);
-  const rightPole = courtToScreen( 1, netDepth);
-
-  // ネット上部（少し高く）
-  const topY = leftPole.y - 18;
-
-  // ネット本体（白帯）
-  _ctx.strokeStyle = "#ffffff";
-  _ctx.lineWidth = 3;
-  _ctx.beginPath();
-  _ctx.moveTo(leftPole.x, topY);
-  _ctx.lineTo(rightPole.x, topY);
-  _ctx.stroke();
-
-  // ネットメッシュ（縦線）
-  _ctx.strokeStyle = "rgba(180, 200, 255, 0.2)";
-  _ctx.lineWidth = 1;
-  for (let i = 0; i <= 8; i++) {
-    const cx = -1 + (2 / 8) * i;
-    const pos = courtToScreen(cx, netDepth);
-    _ctx.beginPath();
-    _ctx.moveTo(pos.x, topY);
-    _ctx.lineTo(pos.x, pos.y);
-    _ctx.stroke();
-  }
-
-  // ネット下部のライン
-  _ctx.strokeStyle = "rgba(180, 200, 255, 0.4)";
-  _ctx.lineWidth = 1;
-  _ctx.beginPath();
-  _ctx.moveTo(leftPole.x, leftPole.y);
-  _ctx.lineTo(rightPole.x, rightPole.y);
-  _ctx.stroke();
-}
-
-/**
- * プレイヤーキャラクターを描画する。
- * 手前（cy=1.0）の位置に、state.playerX の X 位置で表示する。
- */
-function _drawPlayer() {
-  const state = getState();
-  const pos = courtToScreen(state.playerX, 0.92);
-
-  // 影
-  _ctx.beginPath();
-  _ctx.ellipse(pos.x, pos.y + 2, 16, 5, 0, 0, Math.PI * 2);
-  _ctx.fillStyle = "rgba(0,0,0,0.4)";
-  _ctx.fill();
-
-  // 体（シルエット）
-  _ctx.fillStyle = "#4a9fff";
-  // 胴体
-  _ctx.fillRect(pos.x - 9, pos.y - 28, 18, 22);
-  // 頭
-  _ctx.beginPath();
-  _ctx.arc(pos.x, pos.y - 34, 9, 0, Math.PI * 2);
-  _ctx.fill();
-  // 足
-  _ctx.fillStyle = "#2060cc";
-  _ctx.fillRect(pos.x - 9, pos.y - 7, 8, 10);
-  _ctx.fillRect(pos.x + 1, pos.y - 7, 8, 10);
-}
-
-/**
- * 相手チームのキャラクターを描画する（奥側に2体配置）。
- */
-function _drawOpponents() {
-  const positions = [-0.3, 0.3];
-  positions.forEach((cx) => {
-    const pos = courtToScreen(cx, 0.1);
-    // 影
-    _ctx.beginPath();
-    _ctx.ellipse(pos.x, pos.y + 2, 10, 3, 0, 0, Math.PI * 2);
-    _ctx.fillStyle = "rgba(0,0,0,0.3)";
-    _ctx.fill();
-    // 体（相手は赤系）
-    _ctx.fillStyle = "#ff6060";
-    _ctx.fillRect(pos.x - 6, pos.y - 18, 12, 14);
-    _ctx.beginPath();
-    _ctx.arc(pos.x, pos.y - 22, 6, 0, Math.PI * 2);
-    _ctx.fill();
-  });
-}
-
-/**
- * ボールを描画する。
- *
- * @param {number} screenX - Canvas上X
- * @param {number} screenY - Canvas上Y
- */
-function _drawBall(screenX, screenY) {
-  // ボールの光彩
-  const glow = _ctx.createRadialGradient(screenX, screenY, 0, screenX, screenY, 18);
-  glow.addColorStop(0, "rgba(255, 255, 200, 0.6)");
-  glow.addColorStop(1, "rgba(255, 200, 0, 0)");
-  _ctx.beginPath();
-  _ctx.arc(screenX, screenY, 18, 0, Math.PI * 2);
-  _ctx.fillStyle = glow;
-  _ctx.fill();
-
-  // ボール本体
-  _ctx.beginPath();
-  _ctx.arc(screenX, screenY, 9, 0, Math.PI * 2);
-  const ballGrad = _ctx.createRadialGradient(screenX - 3, screenY - 3, 1, screenX, screenY, 9);
-  ballGrad.addColorStop(0, "#ffffff");
-  ballGrad.addColorStop(0.4, "#ffe080");
-  ballGrad.addColorStop(1, "#cc8820");
-  _ctx.fillStyle = ballGrad;
-  _ctx.fill();
-}
-
-/**
- * フェーズに応じた「理想ポジション」インジケーターを描画する。
- * 青い光る点で「ここに移動すると有利」を示す。
- */
-function _drawPositionIndicator() {
-  const idealX = _getIdealPositionX();
-  const pos = courtToScreen(idealX, 0.92);
-
-  _ctx.beginPath();
-  _ctx.arc(pos.x, pos.y + 6, 5, 0, Math.PI * 2);
-  _ctx.fillStyle = "rgba(80, 200, 255, 0.4)";
-  _ctx.fill();
-  _ctx.strokeStyle = "rgba(80, 200, 255, 0.8)";
-  _ctx.lineWidth = 1.5;
-  _ctx.stroke();
-}
-
-// =============================================================
-// 試合の初期化・開始
-// =============================================================
-
-/**
- * 試合を初期化して開始する。
- * screens.js の openMatch から呼ばれる。
- *
- * @param {string} matchType - 試合種別（MATCH_REWARDS のキー）
- */
-function initMatch(matchType) {
-  _matchType = matchType;
-
-  // --- Canvas コンテキスト取得 ---
+function startMatch(scheduleEntry, opponentEntry, opponentName) {
   _canvas = document.getElementById("match-canvas");
   _ctx    = _canvas.getContext("2d");
 
-  // --- スコアリセット ---
-  _score = { mySets: 0, oppSets: 0, myPts: 0, oppPts: 0, setNum: 1 };
+  _scheduleEntry   = scheduleEntry;
+  _opponentName    = opponentName;
+  _opponentAttack  = _randInt(opponentEntry.attackMin,  opponentEntry.attackMax);
+  _opponentDefense = _randInt(opponentEntry.defenseMin, opponentEntry.defenseMax);
 
-  // --- 対戦相手を生成 ---
-  _opponent = _generateOpponent(matchType);
+  _score        = { playerSets: 0, opponentSets: 0, playerPoints: 0, opponentPoints: 0 };
+  _phase        = null;
+  _playerServes = true;
+  _matchActive  = true;
+  _autoMode     = false;
+  _ball.visible = false;
+  _ball.x       = COURT_DRAW.VP_X;
+  _ball.y       = COURT_DRAW.FAR_Y + 30;
+  _phaseText    = "";
 
-  // --- プレー統計リセット ---
-  resetMatchStats();
+  resetMatchStats(); // state.js
 
-  // --- AUTO モードは初期OFF ---
-  _autoMode = false;
-  _moveHeld = { left: false, right: false };
+  // ゲームループ開始
+  _rafId = requestAnimationFrame(_gameLoop);
 
-  // --- 最初のフェーズへ ---
-  _enterPhase(MATCH_PHASE.SERVE);
-
-  // --- ゲームループ開始 ---
-  _startLoop();
+  // 最初のラリー（少し遅らせてCanvasを先に描く）
+  setTimeout(_startNewRally, 400);
 }
 
 /**
- * requestAnimationFrame ループを開始する。
+ * 試合を停止する。
  */
-function _startLoop() {
-  if (_rafId !== null) cancelAnimationFrame(_rafId);
-
-  function loop() {
-    // 移動ボタン押しっぱなし処理
-    if (_moveHeld.left)  movePlayerX(-PLAYER_MOVE.SPEED);
-    if (_moveHeld.right) movePlayerX( PLAYER_MOVE.SPEED);
-
-    // コート描画
-    drawCourt();
-
-    _rafId = requestAnimationFrame(loop);
-  }
-
-  _rafId = requestAnimationFrame(loop);
-}
-
-/**
- * ゲームループを停止する。
- * 試合終了時または画面離脱時に呼ぶ。
- */
-function stopMatchLoop() {
-  if (_rafId !== null) {
+function stopMatch() {
+  _matchActive = false;
+  _clearPhaseTimer();
+  if (_rafId) {
     cancelAnimationFrame(_rafId);
     _rafId = null;
   }
-  if (_phaseTimer !== null) {
-    clearTimeout(_phaseTimer);
-    _phaseTimer = null;
-  }
 }
 
-// =============================================================
-// フェーズ状態機械
-// =============================================================
-
 /**
- * 指定フェーズに移行する。
- * UI の更新（フェーズ名・コマンドボタン）も行う。
+ * コマンドボタンが押されたときに呼ぶ。
  *
- * @param {string} phase - MATCH_PHASE の値
+ * @param {string} cmdId
  */
-function _enterPhase(phase) {
-  _phase = phase;
-  _selectedCommand = null;
+function executeCommand(cmdId) {
+  if (!_matchActive || !_phase) return;
+  if (_autoMode) return;
 
-  // タイマーをリセット
-  if (_phaseTimer !== null) {
-    clearTimeout(_phaseTimer);
-    _phaseTimer = null;
-  }
+  const interactive = [MATCH_PHASE.SERVE, MATCH_PHASE.RECEIVE, MATCH_PHASE.SPIKE, MATCH_PHASE.BLOCK];
+  if (!interactive.includes(_phase)) return;
 
-  // UI 更新（ui.js）
-  updatePhaseUI(phase);
-
-  // ボール位置をフェーズに応じて設定
-  _updateBallForPhase(phase);
-
-  // AUTO モードの場合は自動でコマンドを選択する
-  if (_autoMode && _phaseHasCommands(phase)) {
-    // 少し遅延してから自動実行（演出のため）
-    _phaseTimer = setTimeout(() => {
-      _autoSelectCommand(phase);
-    }, 600);
-    return;
-  }
-
-  // タイムアウト（制限時間内に選択がなければ自動実行）
-  const timeout = PHASE_TIMEOUT[phase];
-  if (timeout && _phaseHasCommands(phase)) {
-    _phaseTimer = setTimeout(() => {
-      _autoSelectCommand(phase);
-    }, timeout);
-  }
-
-  // コマンドなしフェーズ（SET, OPP_RETURN, POINT）は自動進行
-  if (!_phaseHasCommands(phase)) {
-    const delay = phase === MATCH_PHASE.POINT ? PHASE_TIMEOUT[MATCH_PHASE.POINT] : 900;
-    _phaseTimer = setTimeout(() => {
-      _resolvePhase(phase, null);
-    }, delay);
-  }
+  _clearPhaseTimer();
+  _resolvePhase(cmdId);
 }
 
-/**
- * フェーズにコマンド選択があるか判定する。
- *
- * @param {string} phase
- * @returns {boolean}
- */
-function _phaseHasCommands(phase) {
-  return !!(PHASE_COMMANDS[phase] && PHASE_COMMANDS[phase].length > 0);
-}
+/** ← キー押下状態を設定する */
+function setMoveLeft(active)  { _moveLeft  = active; }
+
+/** → キー押下状態を設定する */
+function setMoveRight(active) { _moveRight = active; }
 
 /**
- * AUTO モード用：コマンドをランダムに自動選択する。
- * 成功率が高いコマンドをやや優先する。
- *
- * @param {string} phase
- */
-function _autoSelectCommand(phase) {
-  const commands = PHASE_COMMANDS[phase];
-  if (!commands) {
-    _resolvePhase(phase, null);
-    return;
-  }
-
-  // successMod が高いほど選ばれやすい（重み付きランダム）
-  const weights = commands.map((c) => Math.max(0.1, 0.5 + c.successMod));
-  const total   = weights.reduce((a, b) => a + b, 0);
-  let rand = Math.random() * total;
-
-  let chosen = commands[0];
-  for (let i = 0; i < commands.length; i++) {
-    rand -= weights[i];
-    if (rand <= 0) {
-      chosen = commands[i];
-      break;
-    }
-  }
-
-  executeCommand(chosen.id, phase);
-}
-
-/**
- * プレイヤーがコマンドを選択したときに呼ぶ（UI からのエントリーポイント）。
- *
- * @param {string} commandId - コマンドID（"straight" など）
- * @param {string} phase     - 現在のフェーズ
- */
-function executeCommand(commandId, phase) {
-  if (_phase !== phase) return; // フェーズが変わっていれば無視
-
-  const commands = PHASE_COMMANDS[phase];
-  if (!commands) return;
-
-  const command = commands.find((c) => c.id === commandId);
-  if (!command) return;
-
-  _selectedCommand = commandId;
-
-  // タイマーをキャンセル（選択済みなので不要）
-  if (_phaseTimer !== null) {
-    clearTimeout(_phaseTimer);
-    _phaseTimer = null;
-  }
-
-  // フェーズ解決へ
-  _resolvePhase(phase, command);
-}
-
-/**
- * フェーズを解決して次フェーズへ進む。
- * フェーズごとの判定ロジックはここに集約する。
- *
- * @param {string} phase          - 解決するフェーズ
- * @param {Object|null} command   - 選択されたコマンド（nullなら自動）
- */
-function _resolvePhase(phase, command) {
-  const state = getState();
-
-  switch (phase) {
-
-    // --- サーブ ---
-    case MATCH_PHASE.SERVE: {
-      // サーブ成功率（ability.serve ベース + コマンド補正）
-      const serveAbility = (state.stats.serve || 20) / GAME_CONFIG.STAT_MAX;
-      const mod          = command ? command.successMod : 0;
-      const success      = Math.random() < (serveAbility * 0.6 + 0.3 + mod);
-
-      _showOverlay(success ? "SERVE!" : "サーブミス");
-
-      if (success) {
-        // サーブ成功 → 相手のレシーブ処理（OPP_RETURN扱い）
-        _phaseTimer = setTimeout(() => _enterPhase(MATCH_PHASE.OPP_RETURN), 800);
-      } else {
-        // サーブミス → 相手の得点
-        _phaseTimer = setTimeout(() => {
-          _addPoint(false);
-        }, 1000);
-      }
-      break;
-    }
-
-    // --- レシーブ ---
-    case MATCH_PHASE.RECEIVE: {
-      const receiveAbility = (state.stats.receive || 20) / GAME_CONFIG.STAT_MAX;
-      const posBonus       = _calcPositioningBonus();
-      const mod            = command ? command.successMod : 0;
-      const successRate    = Math.min(0.95, receiveAbility * 0.55 + 0.2 + mod + posBonus);
-      const success        = Math.random() < successRate;
-
-      recordReceive(success);
-      _showOverlay(success ? "RECEIVE!" : "レシーブ失敗");
-
-      if (success) {
-        _phaseTimer = setTimeout(() => _enterPhase(MATCH_PHASE.SET), 700);
-      } else {
-        _phaseTimer = setTimeout(() => {
-          _addPoint(false);
-        }, 1000);
-      }
-      break;
-    }
-
-    // --- セット（自動処理）---
-    case MATCH_PHASE.SET: {
-      const tossAbility = (state.stats.toss || 20) / GAME_CONFIG.STAT_MAX;
-      const success     = Math.random() < (tossAbility * 0.5 + 0.45);
-
-      _showOverlay(success ? "SET!" : "トスミス");
-
-      if (success) {
-        _phaseTimer = setTimeout(() => _enterPhase(MATCH_PHASE.ATTACK), 700);
-      } else {
-        // トスミス → 相手得点
-        _phaseTimer = setTimeout(() => {
-          _addPoint(false);
-        }, 1000);
-      }
-      break;
-    }
-
-    // --- アタック ---
-    case MATCH_PHASE.ATTACK: {
-      const spikeAbility = (state.stats.spike || 20) / GAME_CONFIG.STAT_MAX;
-      const jumpAbility  = (state.stats.jump  || 20) / GAME_CONFIG.STAT_MAX;
-      const posBonus     = _calcPositioningBonus();
-      const mod          = command ? command.successMod : 0;
-      const successRate  = Math.min(0.92, (spikeAbility * 0.5 + jumpAbility * 0.2) + 0.15 + mod + posBonus);
-      const success      = Math.random() < successRate;
-
-      recordSpike(success);
-      _showOverlay(success ? "SPIKE!" : "ブロック");
-
-      if (success) {
-        _phaseTimer = setTimeout(() => _addPoint(true), 700);
-      } else {
-        // ブロックされた → 相手の攻撃フェーズ（OPP_RETURN）へ
-        _phaseTimer = setTimeout(() => _enterPhase(MATCH_PHASE.OPP_RETURN), 800);
-      }
-      break;
-    }
-
-    // --- 相手の攻撃（自動処理）---
-    case MATCH_PHASE.OPP_RETURN: {
-      // 相手の攻撃力 vs 自分の守備力で勝敗を決める
-      const oppAttackRate  = (_opponent.attack  / GAME_CONFIG.STAT_MAX) * 0.6;
-      const myDefenseRate  = (state.stats.receive || 20) / GAME_CONFIG.STAT_MAX * 0.4
-                           + (state.stats.block   || 20) / GAME_CONFIG.STAT_MAX * 0.2;
-      const oppScores      = Math.random() < Math.max(0.2, oppAttackRate - myDefenseRate + 0.3);
-
-      _showOverlay(oppScores ? "被スパイク" : "ブロック成功");
-
-      if (oppScores) {
-        _phaseTimer = setTimeout(() => _addPoint(false), 800);
-      } else {
-        // 相手のスパイクをブロック → 自分の攻撃へ
-        _phaseTimer = setTimeout(() => _enterPhase(MATCH_PHASE.RECEIVE), 800);
-      }
-      break;
-    }
-
-    // --- POINT（ポイント確定・次ラリーへ）---
-    case MATCH_PHASE.POINT: {
-      // このフェーズは _addPoint から呼ばれるため、ここでは何もしない
-      break;
-    }
-  }
-}
-
-// =============================================================
-// 得点・セット・試合の管理
-// =============================================================
-
-/**
- * 1ポイントを加算し、セット・試合終了を判定する。
- *
- * @param {boolean} myPoint - true なら自チームの得点
- */
-function _addPoint(myPoint) {
-  // フェーズオーバーレイを非表示
-  _hideOverlay();
-
-  if (myPoint) {
-    _score.myPts++;
-  } else {
-    _score.oppPts++;
-  }
-
-  // スコア表示を更新
-  updateScoreUI(_score);
-
-  // --- セット終了判定 ---
-  const target  = MATCH_CONFIG.POINTS_PER_SET;
-  const minDiff = MATCH_CONFIG.DEUCE_MIN_DIFF;
-
-  const setOver =
-    (_score.myPts >= target || _score.oppPts >= target) &&
-    Math.abs(_score.myPts - _score.oppPts) >= minDiff;
-
-  if (setOver) {
-    const myWonSet = _score.myPts > _score.oppPts;
-    if (myWonSet) {
-      _score.mySets++;
-    } else {
-      _score.oppSets++;
-    }
-
-    updateScoreUI(_score);
-
-    // --- 試合終了判定 ---
-    if (_score.mySets >= MATCH_CONFIG.SETS_TO_WIN || _score.oppSets >= MATCH_CONFIG.SETS_TO_WIN) {
-      _phaseTimer = setTimeout(() => _endMatch(), 1200);
-    } else {
-      // 次のセットへ
-      _score.myPts  = 0;
-      _score.oppPts = 0;
-      _score.setNum++;
-      updateScoreUI(_score);
-      _phaseTimer = setTimeout(() => _enterPhase(MATCH_PHASE.SERVE), 1500);
-    }
-    return;
-  }
-
-  // --- 次ラリーへ ---
-  // 得点した側がサーブ権を持つ（バレーボールのラリーポイント制）
-  _phaseTimer = setTimeout(() => {
-    if (myPoint) {
-      _enterPhase(MATCH_PHASE.SERVE);
-    } else {
-      // 相手サーブ → 自分はレシーブから
-      _enterPhase(MATCH_PHASE.RECEIVE);
-    }
-  }, PHASE_TIMEOUT[MATCH_PHASE.POINT]);
-}
-
-/**
- * 試合を終了してリザルト画面へ遷移する。
- */
-function _endMatch() {
-  stopMatchLoop();
-
-  const win        = _score.mySets >= MATCH_CONFIG.SETS_TO_WIN;
-  const scoreText  = `${_score.mySets}-${_score.oppSets}`;
-  const state      = getState();
-
-  // MVP 判定（勝利かつ全セット勝ち かつ スパイク成功率 >= 60%）
-  const spikeRate =
-    state.currentMatchStats.spikeAttempts > 0
-      ? state.currentMatchStats.spikeSuccess / state.currentMatchStats.spikeAttempts
-      : 0;
-  const mvp = win && _score.oppSets === 0 && spikeRate >= 0.6;
-
-  // 試合結果を state に記録
-  recordMatchResult({
-    win,
-    matchType: _matchType,
-    opponentName: _opponent.name,
-    score: scoreText,
-    mvp,
-  });
-
-  // 報酬計算（economy.js）
-  const rewards = calcMatchRewards(_matchType, win, mvp);
-
-  // ファン変動
-  const fanKey = win
-    ? `win_${_matchType}`
-    : "lose";
-  const fanDelta = (FAN_CHANGE[fanKey] || 0) + (mvp ? FAN_CHANGE.mvp_bonus : 0);
-  changeFans(fanDelta);
-
-  // グレード計算
-  const grade = _calcGrade(win, spikeRate, state.currentMatchStats);
-
-  // リザルト画面へ
-  openResult({
-    win,
-    opponent: _opponent,
-    scoreText,
-    mvp,
-    grade,
-    rewards,
-    matchStats: { ...state.currentMatchStats },
-  });
-}
-
-// =============================================================
-// グレード・補助計算
-// =============================================================
-
-/**
- * 試合のグレードを計算する。
- * 勝敗・スパイク成功率・レシーブ成功率・得点貢献で採点する。
- *
- * @param {boolean} win     - 試合勝利したか
- * @param {number}  spikeRate - スパイク成功率（0〜1）
- * @param {Object}  stats   - currentMatchStats
- * @returns {{ grade: string, color: string, message: string }}
- */
-function _calcGrade(win, spikeRate, stats) {
-  let score = 0;
-
-  // 勝敗（50点満点）
-  score += win ? 50 : 10;
-
-  // スパイク成功率（25点満点）
-  score += spikeRate * 25;
-
-  // レシーブ成功率（15点満点）
-  const receiveRate =
-    stats.receiveAttempts > 0
-      ? stats.receiveSuccess / stats.receiveAttempts
-      : 0;
-  score += receiveRate * 15;
-
-  // 得点貢献（10点満点、最大10点）
-  score += Math.min(10, stats.pointContrib);
-
-  // GRADE_TABLE からグレードを決定する（minScore降順で最初にマッチしたもの）
-  const entry = GRADE_TABLE.find((g) => score >= g.minScore);
-  return entry || GRADE_TABLE[GRADE_TABLE.length - 1];
-}
-
-/**
- * プレイヤーの現在位置と理想位置の差からポジションボーナスを計算する。
- * 理想位置に近いほど成功率が上がる。
- *
- * @returns {number} ボーナス値（-0.1 〜 +0.1）
- */
-function _calcPositioningBonus() {
-  const state  = getState();
-  const idealX = _getIdealPositionX();
-  const dist   = Math.abs(state.playerX - idealX);
-
-  if (dist < PLAYER_MOVE.IDEAL_TOL) {
-    return 0.10; // 理想位置に近い → ボーナス
-  } else if (dist < PLAYER_MOVE.IDEAL_TOL * 2) {
-    return 0;    // 普通
-  } else {
-    return -0.10; // 遠い → ペナルティ
-  }
-}
-
-/**
- * 現在フェーズの「理想ポジションX」を返す。
- * フェーズ・コマンドによって変わる（例：クロスなら左端が有利）。
- *
- * @returns {number} -1.0 〜 +1.0
- */
-function _getIdealPositionX() {
-  switch (_phase) {
-    case MATCH_PHASE.RECEIVE:
-    case MATCH_PHASE.OPP_RETURN:
-      // 相手の攻撃に備えて中央
-      return 0;
-    case MATCH_PHASE.ATTACK:
-      // コマンドに応じてポジションが変わる
-      if (_selectedCommand === "cross")    return -0.6;
-      if (_selectedCommand === "straight") return  0.6;
-      return 0;
-    default:
-      return 0;
-  }
-}
-
-// =============================================================
-// 対戦相手の生成
-// =============================================================
-
-/**
- * 対戦相手を生成する。
- * OPPONENT_TABLE から試合種別に応じた強さ範囲でランダム生成する。
- *
- * @param {string} matchType
- * @returns {{ name: string, attack: number, defense: number }}
- */
-function _generateOpponent(matchType) {
-  const table = OPPONENT_TABLE[matchType];
-  if (!table) {
-    return { name: "対戦相手", attack: 30, defense: 30 };
-  }
-
-  const name    = table.names[Math.floor(Math.random() * table.names.length)];
-  const attack  = _randInt(table.attackMin,  table.attackMax);
-  const defense = _randInt(table.defenseMin, table.defenseMax);
-
-  return { name, attack, defense };
-}
-
-// =============================================================
-// Canvas UI ヘルパー（フェーズオーバーレイ）
-// =============================================================
-
-/**
- * フェーズ名オーバーレイを一時表示する。
- *
- * @param {string} text - 表示テキスト
- */
-function _showOverlay(text) {
-  const overlay = document.getElementById("phase-overlay");
-  const label   = document.getElementById("phase-overlay-text");
-  if (!overlay || !label) return;
-
-  label.textContent = text;
-  overlay.style.display = "block";
-  _overlayVisible = true;
-
-  // アニメーション終了後に非表示
-  setTimeout(() => _hideOverlay(), 800);
-}
-
-/**
- * フェーズ名オーバーレイを非表示にする。
- */
-function _hideOverlay() {
-  const overlay = document.getElementById("phase-overlay");
-  if (overlay) overlay.style.display = "none";
-  _overlayVisible = false;
-}
-
-// =============================================================
-// ボール位置のアニメーション更新
-// =============================================================
-
-/**
- * フェーズに応じてボールのCanvas位置を更新する。
- *
- * @param {string} phase
- */
-function _updateBallForPhase(phase) {
-  const d = COURT_DRAW;
-
-  switch (phase) {
-    case MATCH_PHASE.SERVE:
-      _ball = { x: d.VP_X, y: d.FAR_Y + 50, visible: true };
-      break;
-    case MATCH_PHASE.RECEIVE: {
-      // 相手コートから飛んでくる → 手前のランダム位置
-      const rx = d.VP_X + (_randInt(-200, 200));
-      _ball = { x: rx, y: d.NEAR_Y - 60, visible: true };
-      break;
-    }
-    case MATCH_PHASE.SET:
-      _ball = { x: d.VP_X, y: d.FAR_Y + 120, visible: true };
-      break;
-    case MATCH_PHASE.ATTACK:
-      _ball = { x: d.VP_X, y: d.FAR_Y + 80, visible: true };
-      break;
-    case MATCH_PHASE.OPP_RETURN:
-      _ball = { x: d.VP_X, y: d.FAR_Y + 60, visible: true };
-      break;
-    case MATCH_PHASE.POINT:
-      _ball.visible = false;
-      break;
-    default:
-      _ball.visible = false;
-  }
-}
-
-// =============================================================
-// AUTO モードの切り替え
-// =============================================================
-
-/**
- * AUTO モードをトグルする。
- * screens.js またはメインのボタンから呼ばれる。
- *
- * @returns {boolean} 変更後の AUTO 状態
+ * AUTOモードを切り替える。
+ * @returns {boolean} 切り替え後の状態
  */
 function toggleAutoMode() {
   _autoMode = !_autoMode;
   return _autoMode;
 }
 
-/**
- * 現在の AUTO モード状態を返す。
- *
- * @returns {boolean}
- */
-function isAutoMode() {
-  return _autoMode;
-}
+function isAutoMode()    { return _autoMode; }
+function getMatchPhase() { return _phase; }
+function getScore()      { return { ..._score }; }
 
-// =============================================================
-// 移動ボタンのホールド状態管理
-// =============================================================
+// ============================================================
+// フェーズ制御
+// ============================================================
 
 /**
- * 移動ボタンのホールドを開始する（pointerdown）。
- *
- * @param {"left"|"right"} dir - 移動方向
+ * 新しいラリーを開始する。
  */
-function startMove(dir) {
-  _moveHeld[dir] = true;
-}
+function _startNewRally() {
+  if (!_matchActive) return;
+  _blockerPositions = [];
+  _idealX           = 0;
+  _positionBonus    = 0;
+  _phaseText        = "";
+  _moveLeft         = false;
+  _moveRight        = false;
+  getState().playerX = 0;
 
-/**
- * 移動ボタンのホールドを終了する（pointerup / pointerleave）。
- *
- * @param {"left"|"right"} dir - 移動方向
- */
-function stopMove(dir) {
-  _moveHeld[dir] = false;
-}
-
-// =============================================================
-// 現在フェーズの公開
-// =============================================================
-
-/**
- * 現在のラリーフェーズを返す。
- * ui.js からコマンドボタン生成時に参照する。
- *
- * @returns {string} MATCH_PHASE の値
- */
-function getCurrentPhase() {
-  return _phase;
+  _startPhase(_playerServes ? MATCH_PHASE.SERVE : MATCH_PHASE.RECEIVE);
 }
 
 /**
- * 現在のスコアを返す。
+ * 指定フェーズへ遷移する。
  *
- * @returns {{ mySets, oppSets, myPts, oppPts, setNum }}
+ * @param {string} phase - MATCH_PHASE の値
  */
-function getCurrentScore() {
-  return { ..._score };
+function _startPhase(phase) {
+  if (!_matchActive) return;
+  _phase = phase;
+
+  updatePhaseUI(phase);          // ui.js
+  updateScoreUI(_scoreForUI());  // ui.js
+
+  const timeout = PHASE_TIMEOUT[phase];
+
+  if (phase === MATCH_PHASE.TOSS || phase === MATCH_PHASE.AUTO_RALLY || phase === MATCH_PHASE.POINT) {
+    // 自動フェーズ：プレイヤー入力なし
+    _phaseTimer = setTimeout(() => _handleAutoPhase(phase), timeout);
+  } else {
+    // インタラクティブフェーズ
+    if (_autoMode) {
+      _phaseTimer = setTimeout(() => _autoSelectCommand(phase), 700);
+    } else {
+      _phaseTimer = setTimeout(() => _autoSelectCommand(phase), timeout);
+    }
+  }
+}
+
+function _clearPhaseTimer() {
+  if (_phaseTimer) {
+    clearTimeout(_phaseTimer);
+    _phaseTimer = null;
+  }
 }
 
 /**
- * 現在の対戦相手を返す。
- *
- * @returns {{ name, attack, defense }|null}
+ * 自動フェーズ（TOSS / AUTO_RALLY / POINT）の処理。
  */
-function getCurrentOpponent() {
-  return _opponent;
+function _handleAutoPhase(phase) {
+  if (!_matchActive) return;
+
+  if (phase === MATCH_PHASE.TOSS) {
+    // トス完了 → スパイクへ
+    _setupBlockers();
+    _startPhase(MATCH_PHASE.SPIKE);
+
+  } else if (phase === MATCH_PHASE.AUTO_RALLY) {
+    // 自動ラリー結果
+    const playerWins = _calcAutoRallySuccess();
+    _phaseText = playerWins ? "ラリー制した！" : "ラリー取られた…";
+    _scorePoint(playerWins);
+
+  } else if (phase === MATCH_PHASE.POINT) {
+    _startNewRally();
+  }
 }
 
-// =============================================================
-// 内部ユーティリティ
-// =============================================================
+/**
+ * AUTOモード / タイムアウト時の自動コマンド選択。
+ */
+function _autoSelectCommand(phase) {
+  if (!_matchActive) return;
+  const cmds = PHASE_COMMANDS[phase];
+  if (!cmds || cmds.length === 0) return;
+
+  const cmdId = _autoMode
+    ? _pickBestCommand(phase)
+    : cmds[0].id;
+
+  _resolvePhase(cmdId);
+}
 
 /**
- * min 以上 max 以下の整数をランダムに返す。
+ * フェーズのコマンドを解決し、結果に応じて次フェーズへ遷移する。
  *
- * @param {number} min
- * @param {number} max
- * @returns {number}
+ * @param {string} cmdId
  */
+function _resolvePhase(cmdId) {
+  if (!_matchActive) return;
+  const phase = _phase;
+
+  // --- SERVE ---
+  if (phase === MATCH_PHASE.SERVE) {
+    const success = _calcServeSuccess(cmdId);
+    _ball.visible = true;
+    _animateBall(
+      COURT_DRAW.VP_X, COURT_DRAW.NEAR_Y - 50,
+      COURT_DRAW.VP_X + _randFloat(-80, 80), COURT_DRAW.FAR_Y + 20,
+      850, -70
+    );
+
+    if (!success) {
+      _phaseText = "サーブミス！";
+      _phaseTimer = setTimeout(() => _scorePoint(false), 900);
+      return;
+    }
+
+    // サーブ成功後の展開を決定する
+    _phaseTimer = setTimeout(() => {
+      if (!_matchActive) return;
+      const roll = Math.random();
+      if (roll < 0.22) {
+        // サービスエース
+        _phaseText = "サービスエース！";
+        _scorePoint(true);
+      } else if (roll < 0.55) {
+        // 相手が反撃 → プレイヤーがブロック
+        _idealX = _randFloat(-0.7, 0.7);
+        _startPhase(MATCH_PHASE.BLOCK);
+      } else {
+        // 長いラリーへ
+        _startPhase(MATCH_PHASE.AUTO_RALLY);
+      }
+    }, 900);
+  }
+
+  // --- RECEIVE ---
+  else if (phase === MATCH_PHASE.RECEIVE) {
+    const cmd = PHASE_COMMANDS[MATCH_PHASE.RECEIVE].find((c) => c.id === cmdId);
+
+    if (cmd && cmd.id === "avoid") {
+      // 避ける → レシーブしない → 相手得点
+      _phaseText = "ボールを避けた";
+      _phaseTimer = setTimeout(() => _scorePoint(false), 400);
+      return;
+    }
+
+    const success = _calcReceiveSuccess(cmdId);
+    recordReceive(success); // state.js
+
+    if (success) {
+      _phaseText = "レシーブ成功！";
+      _animateBall(
+        COURT_DRAW.VP_X + getState().playerX * COURT_DRAW.NEAR_HALF_W,
+        COURT_DRAW.NEAR_Y - 30,
+        COURT_DRAW.VP_X, (COURT_DRAW.NEAR_Y + COURT_DRAW.FAR_Y) / 2,
+        600, -45
+      );
+      _phaseTimer = setTimeout(() => _startPhase(MATCH_PHASE.TOSS), 650);
+    } else {
+      _phaseText = "レシーブ失敗…";
+      _phaseTimer = setTimeout(() => _scorePoint(false), 600);
+    }
+  }
+
+  // --- SPIKE ---
+  else if (phase === MATCH_PHASE.SPIKE) {
+    const success = _calcSpikeSuccess(cmdId);
+    recordSpike(success); // state.js
+
+    const st = getState();
+    _animateBall(
+      COURT_DRAW.VP_X + st.playerX * COURT_DRAW.NEAR_HALF_W * 0.5,
+      (COURT_DRAW.NEAR_Y + COURT_DRAW.FAR_Y) / 2,
+      COURT_DRAW.VP_X + _randFloat(-100, 100), COURT_DRAW.FAR_Y + 15,
+      700, success ? -25 : 20
+    );
+
+    if (success) {
+      _phaseText = "スパイク決まった！";
+      _phaseTimer = setTimeout(() => _scorePoint(true), 750);
+    } else {
+      // スパイクがカットされた
+      _phaseText = "スパイク返された！";
+      _phaseTimer = setTimeout(() => {
+        if (!_matchActive) return;
+        if (Math.random() < 0.55) {
+          _idealX = _randFloat(-0.7, 0.7);
+          _startPhase(MATCH_PHASE.BLOCK);
+        } else {
+          _startPhase(MATCH_PHASE.AUTO_RALLY);
+        }
+      }, 750);
+    }
+  }
+
+  // --- BLOCK ---
+  else if (phase === MATCH_PHASE.BLOCK) {
+    const success = _calcBlockSuccess(cmdId);
+    recordBlock(success); // state.js
+
+    if (cmdId === "kill") {
+      if (success) {
+        _phaseText = "キルブロック！";
+        _animateBall(
+          COURT_DRAW.VP_X + getState().playerX * COURT_DRAW.NEAR_HALF_W,
+          (COURT_DRAW.NEAR_Y + COURT_DRAW.FAR_Y) / 2,
+          COURT_DRAW.VP_X + _randFloat(-120, 120), COURT_DRAW.FAR_Y + 10,
+          500, -20
+        );
+        _phaseTimer = setTimeout(() => _scorePoint(true), 600);
+      } else {
+        _phaseText = "ブロック外した…";
+        _phaseTimer = setTimeout(() => _scorePoint(false), 600);
+      }
+    } else if (cmdId === "soft") {
+      _phaseText = "ソフトブロック、つなぐ！";
+      _phaseTimer = setTimeout(() => _startPhase(MATCH_PHASE.AUTO_RALLY), 600);
+    } else {
+      // avoid
+      if (Math.random() < 0.28) {
+        _phaseText = "うまく回避した！";
+        _phaseTimer = setTimeout(() => _startPhase(MATCH_PHASE.AUTO_RALLY), 600);
+      } else {
+        _phaseText = "避けて失点…";
+        _phaseTimer = setTimeout(() => _scorePoint(false), 600);
+      }
+    }
+  }
+}
+
+// ============================================================
+// 得点・セット管理
+// ============================================================
+
+/**
+ * 1点を記録し、セット/試合終了を確認する。
+ *
+ * @param {boolean} playerScored
+ */
+function _scorePoint(playerScored) {
+  if (!_matchActive) return;
+
+  if (playerScored) {
+    _score.playerPoints++;
+    _playerServes = true;
+  } else {
+    _score.opponentPoints++;
+    _playerServes = false;
+  }
+
+  updateScoreUI(_scoreForUI()); // ui.js
+
+  if (_checkSetOver()) return;
+
+  _phaseTimer = setTimeout(() => _startPhase(MATCH_PHASE.POINT), 100);
+}
+
+/**
+ * セット終了条件をチェックし、終了していれば次セットまたは試合終了へ。
+ *
+ * @returns {boolean} セットが終了した場合 true
+ */
+function _checkSetOver() {
+  const pp  = _score.playerPoints;
+  const op  = _score.opponentPoints;
+  const max = MATCH_CONFIG.POINTS_PER_SET;
+  const diff = MATCH_CONFIG.DEUCE_MIN_DIFF;
+
+  let winner = null;
+  if (pp >= max && pp - op >= diff) winner = "player";
+  if (op >= max && op - pp >= diff) winner = "opponent";
+  if (!winner) return false;
+
+  if (winner === "player") _score.playerSets++;
+  else                     _score.opponentSets++;
+
+  _score.playerPoints  = 0;
+  _score.opponentPoints = 0;
+  updateScoreUI(_scoreForUI());
+
+  // 試合終了チェック
+  if (_score.playerSets  >= MATCH_CONFIG.SETS_TO_WIN ||
+      _score.opponentSets >= MATCH_CONFIG.SETS_TO_WIN) {
+    _clearPhaseTimer();
+    _phaseTimer = setTimeout(_endMatch, 1800);
+    return true;
+  }
+
+  // 次セット
+  _phaseText = winner === "player" ? "セット獲得！" : "セット落とした…";
+  _phaseTimer = setTimeout(_startNewRally, 2000);
+  return true;
+}
+
+/**
+ * 試合を終了して result 画面へ遷移する。
+ */
+function _endMatch() {
+  if (!_matchActive) return;
+  stopMatch();
+
+  const win = _score.playerSets >= MATCH_CONFIG.SETS_TO_WIN;
+  const st  = getState();
+  const cs  = st.currentMatchStats;
+
+  // MVP 判定（勝利 + プレー貢献3点以上）
+  const mvp = win && cs.pointContrib >= 3;
+
+  const matchStats = {
+    spikeAttempts:   cs.spikeAttempts,
+    spikeSuccess:    cs.spikeSuccess,
+    receiveAttempts: cs.receiveAttempts,
+    receiveSuccess:  cs.receiveSuccess,
+    blockAttempts:   cs.blockAttempts,
+    blockSuccess:    cs.blockSuccess,
+    pointContrib:    cs.pointContrib,
+  };
+
+  const matchResult = {
+    win,
+    mvp,
+    matchType:    _scheduleEntry.matchType,
+    label:        _scheduleEntry.label,
+    opponentName: _opponentName,
+    scoreText:    `${_score.playerSets} - ${_score.opponentSets}`,
+    matchStats,
+  };
+
+  // career.js で評価・報酬・移籍チェック
+  const careerResult = processMatchEnd(matchResult);
+
+  // リザルト画面へ渡すオブジェクトを組み立てる
+  const resultForScreen = {
+    ...matchResult,
+    evalGain:   careerResult.evalGain,
+    rewards:    careerResult.rewards,
+    newOffers:  careerResult.newOffers,
+    isEnding:   careerResult.isEnding,
+    endingId:   careerResult.endingId,
+  };
+
+  // screens.js へ
+  openResult(resultForScreen);
+}
+
+// ============================================================
+// 成功率計算
+// ============================================================
+
+function _calcServeSuccess(cmdId) {
+  const cmd = PHASE_COMMANDS[MATCH_PHASE.SERVE].find((c) => c.id === cmdId);
+  const mod = cmd ? cmd.successMod : 0;
+  const st  = getState();
+  const base = 0.55 + (st.stats.serve / 100) * 0.28 + mod;
+  return Math.random() < _clamp(base, 0.15, 0.95);
+}
+
+function _calcReceiveSuccess(cmdId) {
+  const cmd  = PHASE_COMMANDS[MATCH_PHASE.RECEIVE].find((c) => c.id === cmdId);
+  const mod  = cmd ? cmd.successMod : 0;
+  const st   = getState();
+  const base = 0.50
+    + (st.stats.receive / 100) * 0.28
+    + (st.stats.speed   / 100) * 0.10
+    + mod
+    + _positionBonus;
+  return Math.random() < _clamp(base, 0.08, 0.94);
+}
+
+function _calcSpikeSuccess(cmdId) {
+  const cmd = PHASE_COMMANDS[MATCH_PHASE.SPIKE].find((c) => c.id === cmdId);
+  const mod = cmd ? cmd.successMod : 0;
+  const st  = getState();
+
+  // 自分のX位置がブロッカーと重なっているとペナルティ
+  const px = st.playerX;
+  const onBlocker = _blockerPositions.some((bx) => Math.abs(bx - px) < 0.22);
+  const blockerMod = onBlocker ? -0.18 : 0.08;
+
+  const atkPower = (
+    st.stats.spike    * MATCH_CONFIG.ATTACK_SPIKE_WEIGHT +
+    st.stats.strength * MATCH_CONFIG.ATTACK_STRENGTH_WEIGHT +
+    st.stats.jump     * MATCH_CONFIG.ATTACK_JUMP_WEIGHT
+  ) / (MATCH_CONFIG.ATTACK_SPIKE_WEIGHT + MATCH_CONFIG.ATTACK_STRENGTH_WEIGHT + MATCH_CONFIG.ATTACK_JUMP_WEIGHT);
+
+  const base = 0.40
+    + (atkPower         / 100) * 0.32
+    - (_opponentDefense / 100) * 0.18
+    + mod + blockerMod;
+  return Math.random() < _clamp(base, 0.08, 0.92);
+}
+
+function _calcBlockSuccess(cmdId) {
+  const cmd = PHASE_COMMANDS[MATCH_PHASE.BLOCK].find((c) => c.id === cmdId);
+  const mod = cmd ? cmd.successMod : 0;
+  const st  = getState();
+
+  const defPower = (
+    st.stats.block * MATCH_CONFIG.DEFENSE_BLOCK_WEIGHT +
+    st.stats.speed * MATCH_CONFIG.DEFENSE_SPEED_WEIGHT
+  ) / (MATCH_CONFIG.DEFENSE_BLOCK_WEIGHT + MATCH_CONFIG.DEFENSE_SPEED_WEIGHT);
+
+  const base = 0.35
+    + (defPower         / 100) * 0.38
+    - (_opponentAttack  / 100) * 0.18
+    + mod
+    + _positionBonus;
+  return Math.random() < _clamp(base, 0.05, 0.90);
+}
+
+function _calcAutoRallySuccess() {
+  const st = getState();
+  const playerPower = (
+    st.stats.spike   * 0.35 +
+    st.stats.receive * 0.30 +
+    st.stats.block   * 0.15 +
+    st.stats.speed   * 0.20
+  );
+  const oppPower = (_opponentAttack + _opponentDefense) / 2;
+  const base = 0.45
+    + (playerPower / 100) * 0.28
+    - (oppPower    / 100) * 0.18;
+  return Math.random() < _clamp(base, 0.18, 0.82);
+}
+
+/**
+ * AUTOモード用：successMod が最高のコマンドを選ぶ。
+ */
+function _pickBestCommand(phase) {
+  const cmds = PHASE_COMMANDS[phase];
+  if (!cmds || cmds.length === 0) return null;
+  return cmds.reduce((best, c) => c.successMod > best.successMod ? c : best, cmds[0]).id;
+}
+
+// ============================================================
+// ブロッカー配置
+// ============================================================
+
+function _setupBlockers() {
+  _blockerPositions = [];
+  const count = _randInt(1, 3);
+  const pool  = [-0.55, -0.25, 0.0, 0.25, 0.55, -0.75, 0.75];
+  const shuffled = pool.slice().sort(() => Math.random() - 0.5);
+  for (let i = 0; i < count; i++) {
+    _blockerPositions.push(shuffled[i]);
+  }
+}
+
+// ============================================================
+// ボールアニメーション
+// ============================================================
+
+/**
+ * ボールアニメーションを設定する。
+ *
+ * @param {number} sx, sy - 開始ピクセル座標
+ * @param {number} ex, ey - 終了ピクセル座標
+ * @param {number} duration - ミリ秒
+ * @param {number} arcH  - 弧の高さ（負で上に凸）
+ */
+function _animateBall(sx, sy, ex, ey, duration, arcH) {
+  _ball.visible = true;
+  _ballAnim = {
+    sx, sy, ex, ey,
+    startTime: performance.now(),
+    duration,
+    arcH: arcH || -50,
+  };
+}
+
+// ============================================================
+// ゲームループ・Canvas 描画
+// ============================================================
+
+function _gameLoop(timestamp) {
+  if (!_matchActive || !_ctx) return;
+
+  const st = getState();
+
+  // ── プレイヤー移動 ──
+  if (_phase === MATCH_PHASE.RECEIVE || _phase === MATCH_PHASE.BLOCK) {
+    if (_moveLeft)  movePlayerX(-PLAYER_MOVE.SPEED); // state.js
+    if (_moveRight) movePlayerX( PLAYER_MOVE.SPEED);
+
+    const dist = Math.abs(st.playerX - _idealX);
+    _positionBonus = dist < PLAYER_MOVE.IDEAL_TOL ? 0.12 : -0.08;
+  }
+
+  // ── 描画 ──
+  _ctx.clearRect(0, 0, COURT_DRAW.CANVAS_W, COURT_DRAW.CANVAS_H);
+  _renderCourt();
+  _renderOpponentPlayers();
+
+  if (_phase === MATCH_PHASE.SPIKE) {
+    _renderBlockers();
+  }
+
+  _renderPlayer(st.playerX);
+  _renderBall(timestamp);
+  _renderOverlayText();
+
+  _rafId = requestAnimationFrame(_gameLoop);
+}
+
+// ============================================================
+// コート描画
+// ============================================================
+
+/**
+ * 2.5D 透視投影コートを描画する。
+ * 手前（NEAR_Y）がプレイヤー側、奥（FAR_Y）が相手側。
+ */
+function _renderCourt() {
+  const c   = COURT_DRAW;
+  const ctx = _ctx;
+
+  // ── アリーナ背景 ──
+  const bg = ctx.createLinearGradient(0, 0, 0, c.CANVAS_H);
+  bg.addColorStop(0, "#0d1b2a");
+  bg.addColorStop(1, "#1a2a3a");
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, c.CANVAS_W, c.CANVAS_H);
+
+  // 客席エリア（台形の外側）
+  ctx.fillStyle = "#1c2d40";
+  ctx.fillRect(0, 0, c.CANVAS_W, c.FAR_Y + 10);
+
+  // 観客ライト効果（上部グロー）
+  const glow = ctx.createRadialGradient(c.VP_X, c.VP_Y, 0, c.VP_X, c.VP_Y, 260);
+  glow.addColorStop(0, "rgba(200,200,255,0.10)");
+  glow.addColorStop(1, "rgba(0,0,0,0)");
+  ctx.fillStyle = glow;
+  ctx.fillRect(0, 0, c.CANVAS_W, c.CANVAS_H);
+
+  // ── コート床（台形）──
+  ctx.beginPath();
+  ctx.moveTo(c.VP_X - c.FAR_HALF_W,  c.FAR_Y);
+  ctx.lineTo(c.VP_X + c.FAR_HALF_W,  c.FAR_Y);
+  ctx.lineTo(c.VP_X + c.NEAR_HALF_W, c.NEAR_Y);
+  ctx.lineTo(c.VP_X - c.NEAR_HALF_W, c.NEAR_Y);
+  ctx.closePath();
+  const floor = ctx.createLinearGradient(0, c.FAR_Y, 0, c.NEAR_Y);
+  floor.addColorStop(0, "#1a5580");
+  floor.addColorStop(1, "#0e3a5c");
+  ctx.fillStyle = floor;
+  ctx.fill();
+
+  // ── コートライン ──
+  ctx.strokeStyle = "rgba(255,255,255,0.65)";
+  ctx.lineWidth   = 1.5;
+
+  // 奥エンドライン
+  _line(c.VP_X - c.FAR_HALF_W,  c.FAR_Y,  c.VP_X + c.FAR_HALF_W,  c.FAR_Y);
+  // 手前エンドライン
+  _line(c.VP_X - c.NEAR_HALF_W, c.NEAR_Y, c.VP_X + c.NEAR_HALF_W, c.NEAR_Y);
+  // サイドライン
+  _line(c.VP_X - c.FAR_HALF_W,  c.FAR_Y,  c.VP_X - c.NEAR_HALF_W, c.NEAR_Y);
+  _line(c.VP_X + c.FAR_HALF_W,  c.FAR_Y,  c.VP_X + c.NEAR_HALF_W, c.NEAR_Y);
+
+  // 奥行きグリッド線
+  ctx.strokeStyle = "rgba(255,255,255,0.13)";
+  ctx.lineWidth   = 0.8;
+  for (let d = 1; d <= 3; d++) {
+    const t  = d / 4;
+    const y  = c.FAR_Y + (c.NEAR_Y - c.FAR_Y) * t;
+    const hw = c.FAR_HALF_W + (c.NEAR_HALF_W - c.FAR_HALF_W) * t;
+    _line(c.VP_X - hw, y, c.VP_X + hw, y);
+  }
+  // 縦収束線
+  for (let i = -2; i <= 2; i++) {
+    const fx = c.VP_X + i * (c.FAR_HALF_W  / 2.2);
+    const nx = c.VP_X + i * (c.NEAR_HALF_W / 2.2);
+    _line(fx, c.FAR_Y, nx, c.NEAR_Y);
+  }
+
+  // ── ネット ──
+  const nd    = c.NET_DEPTH;
+  const netY  = c.FAR_Y + (c.NEAR_Y - c.FAR_Y) * nd;
+  const netHW = c.FAR_HALF_W + (c.NEAR_HALF_W - c.FAR_HALF_W) * nd;
+  const netH  = 30 + nd * 10;
+
+  ctx.fillStyle   = "rgba(255,255,255,0.10)";
+  ctx.strokeStyle = "rgba(255,255,255,0.75)";
+  ctx.lineWidth   = 1.5;
+  ctx.beginPath();
+  ctx.rect(c.VP_X - netHW, netY - netH, netHW * 2, netH);
+  ctx.fill();
+  ctx.stroke();
+
+  // ネット上テープ
+  ctx.strokeStyle = "#ffffff";
+  ctx.lineWidth   = 3;
+  _line(c.VP_X - netHW, netY - netH, c.VP_X + netHW, netY - netH);
+
+  // センターライン
+  ctx.strokeStyle = "rgba(255,255,255,0.35)";
+  ctx.lineWidth   = 1;
+  _line(c.VP_X - netHW, netY, c.VP_X + netHW, netY);
+}
+
+// ============================================================
+// プレイヤー・相手描画
+// ============================================================
+
+/**
+ * プレイヤーシルエットを描画する。
+ *
+ * @param {number} normX - 正規化X（-1〜+1）
+ */
+function _renderPlayer(normX) {
+  const c   = COURT_DRAW;
+  const sx  = c.VP_X + normX * c.NEAR_HALF_W;
+  const sy  = c.NEAR_Y - 8;
+  const ctx = _ctx;
+
+  // 位置インジケーター
+  if (_phase === MATCH_PHASE.RECEIVE || _phase === MATCH_PHASE.BLOCK) {
+    const good = _positionBonus > 0;
+    ctx.strokeStyle = good ? "#40ff88" : "#ff5050";
+    ctx.lineWidth   = 2;
+    ctx.beginPath();
+    ctx.arc(sx, sy - 30, 18, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // 理想位置マーカー
+    const ix = c.VP_X + _idealX * c.NEAR_HALF_W;
+    ctx.strokeStyle = "rgba(255,220,50,0.6)";
+    ctx.lineWidth   = 1.5;
+    ctx.setLineDash([4, 4]);
+    _line(ix, sy - 2, ix, sy - 60);
+    ctx.setLineDash([]);
+    ctx.fillStyle = "rgba(255,220,50,0.5)";
+    ctx.beginPath();
+    ctx.arc(ix, sy - 60, 5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // シルエット（頭）
+  ctx.fillStyle = "#60c8ff";
+  ctx.beginPath();
+  ctx.arc(sx, sy - 30, 13, 0, Math.PI * 2);
+  ctx.fill();
+
+  // 胴体
+  ctx.fillRect(sx - 9, sy - 17, 18, 22);
+
+  // 足
+  ctx.fillRect(sx - 10, sy + 5,  8, 15);
+  ctx.fillRect(sx + 2,  sy + 5,  8, 15);
+
+  // ジャンプポーズ（SPIKE フェーズ）
+  if (_phase === MATCH_PHASE.SPIKE) {
+    ctx.fillStyle = "rgba(255,200,50,0.5)";
+    ctx.beginPath();
+    ctx.arc(sx, sy - 30, 20, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "#60c8ff";
+    ctx.beginPath();
+    ctx.arc(sx, sy - 30, 13, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillRect(sx - 9, sy - 17, 18, 22);
+    // 腕を上げる
+    ctx.strokeStyle = "#60c8ff";
+    ctx.lineWidth   = 4;
+    _line(sx - 9, sy - 12, sx - 20, sy - 28);
+    _line(sx + 9, sy - 12, sx + 20, sy - 30);
+  }
+}
+
+/**
+ * 相手チームのシルエットを描画する（奥に 3 人）。
+ */
+function _renderOpponentPlayers() {
+  const c   = COURT_DRAW;
+  const oy  = c.FAR_Y + (c.NEAR_Y - c.FAR_Y) * 0.12;
+  const s   = 0.52;
+
+  [-0.45, 0.0, 0.45].forEach((ox) => {
+    const osx = c.VP_X + ox * c.FAR_HALF_W * 0.85;
+    _ctx.fillStyle = "#e05050";
+    _ctx.beginPath();
+    _ctx.arc(osx, oy - 14 * s, 11 * s, 0, Math.PI * 2);
+    _ctx.fill();
+    _ctx.fillRect(osx - 7 * s, oy - 3 * s, 14 * s, 16 * s);
+    _ctx.fillRect(osx - 8 * s, oy + 13 * s, 6 * s, 11 * s);
+    _ctx.fillRect(osx + 2 * s, oy + 13 * s, 6 * s, 11 * s);
+  });
+}
+
+/**
+ * SPIKE フェーズ：相手ブロッカーを強調表示する。
+ */
+function _renderBlockers() {
+  const c    = COURT_DRAW;
+  const nd   = c.NET_DEPTH;
+  const netY = c.FAR_Y + (c.NEAR_Y - c.FAR_Y) * nd;
+  const netHW = c.FAR_HALF_W + (c.NEAR_HALF_W - c.FAR_HALF_W) * nd;
+  const s    = 0.72;
+  const ctx  = _ctx;
+
+  _blockerPositions.forEach((bx) => {
+    const sx = c.VP_X + bx * netHW;
+    const sy = netY - 8;
+
+    ctx.fillStyle = "rgba(255,70,70,0.88)";
+    ctx.beginPath();
+    ctx.arc(sx, sy - 20 * s, 13 * s, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillRect(sx - 9 * s, sy - 7 * s, 18 * s, 22 * s);
+
+    // 腕を高く上げているポーズ
+    ctx.strokeStyle = "rgba(255,70,70,0.88)";
+    ctx.lineWidth   = 4 * s;
+    _line(sx - 9 * s, sy - 2 * s, sx - 19 * s, sy - 25 * s);
+    _line(sx + 9 * s, sy - 2 * s, sx + 19 * s, sy - 27 * s);
+
+    // 警告グロー
+    ctx.strokeStyle = "rgba(255,120,50,0.45)";
+    ctx.lineWidth   = 2;
+    ctx.beginPath();
+    ctx.arc(sx, sy - 20 * s, 20 * s, 0, Math.PI * 2);
+    ctx.stroke();
+  });
+}
+
+/**
+ * ボールを描画する。アニメーション中は補間位置で表示。
+ *
+ * @param {number} timestamp - requestAnimationFrame のタイムスタンプ
+ */
+function _renderBall(timestamp) {
+  if (!_ball.visible) return;
+
+  let bx = _ball.x;
+  let by = _ball.y;
+
+  if (_ballAnim) {
+    const elapsed = timestamp - _ballAnim.startTime;
+    const t = Math.min(1, elapsed / _ballAnim.duration);
+    const ease = t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t;
+
+    bx = _ballAnim.sx + (_ballAnim.ex - _ballAnim.sx) * ease;
+    const arcOffset = Math.sin(t * Math.PI) * _ballAnim.arcH;
+    by = _ballAnim.sy + (_ballAnim.ey - _ballAnim.sy) * ease + arcOffset;
+
+    if (t >= 1) {
+      _ball.x   = _ballAnim.ex;
+      _ball.y   = _ballAnim.ey;
+      _ballAnim = null;
+    }
+  }
+
+  const r   = COURT_DRAW.BALL_RADIUS;
+  const ctx = _ctx;
+
+  // 影（床への投影）
+  ctx.fillStyle = "rgba(0,0,0,0.25)";
+  ctx.beginPath();
+  ctx.ellipse(bx, COURT_DRAW.NEAR_Y - 8, r * 1.3, r * 0.45, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // ボール本体（ラジアルグラデーション）
+  const grad = ctx.createRadialGradient(bx - 3, by - 3, 1, bx, by, r);
+  grad.addColorStop(0, "#ffffff");
+  grad.addColorStop(0.5, "#f5e090");
+  grad.addColorStop(1, "#c8a030");
+  ctx.fillStyle = grad;
+  ctx.beginPath();
+  ctx.arc(bx, by, r, 0, Math.PI * 2);
+  ctx.fill();
+
+  // ボールの縫い目
+  ctx.strokeStyle = "rgba(160,80,20,0.45)";
+  ctx.lineWidth   = 1;
+  ctx.beginPath();
+  ctx.arc(bx, by, r, Math.PI * 0.3, Math.PI * 1.1);
+  ctx.stroke();
+}
+
+/**
+ * フェーズヒントと演出テキストを Canvas 上部に描画する。
+ */
+function _renderOverlayText() {
+  const ctx = _ctx;
+  const cx  = COURT_DRAW.CANVAS_W / 2;
+
+  const hints = {
+    [MATCH_PHASE.SERVE]:      "コマンドを選んでサーブ",
+    [MATCH_PHASE.RECEIVE]:    "◀ ▶ で移動してレシーブ",
+    [MATCH_PHASE.TOSS]:       "味方がトス...",
+    [MATCH_PHASE.SPIKE]:      "コマンドでスパイク（赤 = ブロッカー）",
+    [MATCH_PHASE.BLOCK]:      "◀ ▶ で移動してブロック",
+    [MATCH_PHASE.AUTO_RALLY]: "ラリー中...",
+    [MATCH_PHASE.POINT]:      _phaseText,
+  };
+  const hint = _phase ? (hints[_phase] || "") : "";
+  if (hint) {
+    ctx.font      = "bold 13px 'Segoe UI', sans-serif";
+    ctx.fillStyle = "rgba(255,255,210,0.90)";
+    ctx.textAlign = "center";
+    ctx.fillText(hint, cx, 20);
+  }
+
+  // 得点テキスト（大きく中央に一瞬表示）
+  if (_phaseText && _phase !== MATCH_PHASE.POINT) {
+    ctx.font      = "bold 22px 'Segoe UI', sans-serif";
+    ctx.fillStyle = "rgba(255,240,80,0.95)";
+    ctx.textAlign = "center";
+    ctx.fillText(_phaseText, cx, COURT_DRAW.CANVAS_H / 2 - 20);
+  }
+
+  ctx.textAlign = "left";
+}
+
+// ============================================================
+// Canvas 描画ユーティリティ
+// ============================================================
+
+function _line(x1, y1, x2, y2) {
+  _ctx.beginPath();
+  _ctx.moveTo(x1, y1);
+  _ctx.lineTo(x2, y2);
+  _ctx.stroke();
+}
+
+// ============================================================
+// 汎用ユーティリティ
+// ============================================================
+
+/**
+ * _score を updateScoreUI が期待する形式に変換する。
+ */
+function _scoreForUI() {
+  return {
+    myPts:  _score.playerPoints,
+    oppPts: _score.opponentPoints,
+    mySets: _score.playerSets,
+    oppSets: _score.opponentSets,
+    setNum: _score.playerSets + _score.opponentSets + 1,
+  };
+}
+
 function _randInt(min, max) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+function _randFloat(min, max) {
+  return Math.random() * (max - min) + min;
+}
+
+function _clamp(v, min, max) {
+  return Math.max(min, Math.min(max, v));
 }

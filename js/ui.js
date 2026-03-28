@@ -4,229 +4,445 @@
  *
  * 役割：
  *   - 状態（state.js）を読み取ってDOMに反映する
- *   - 選手カード・カレンダー・トレーニングカード・成長画面を描画する
+ *   - マップ画面（Canvas描画・ロケーションボタン）を管理する
+ *   - 選手作成画面のポイント振り分けUIを制御する
  *   - 試合画面のスコアバー・フェーズUI・コマンドボタンを更新する
- *   - リザルト画面のグレード・統計・報酬を描画する
+ *   - エージェント画面の移籍情報を描画する
+ *   - リザルト・成長・トレーニング画面のDOM更新
  *
  * 設計方針：
  *   - すべての関数は「描画するだけ」に専念する（状態の変更は行わない）
- *   - screens.js・match.js から呼ばれることを想定している
  *   - Godot移植時は各 UI ノードのスクリプトに相当
  */
 
 // =============================================================
-// トップバー（メイン育成画面）
+// マップ画面
 // =============================================================
 
 /**
- * メイン画面のトップバー（選手名・進行状況・ファン・資金）を更新する。
+ * マップ画面のトップバーを更新する。
  */
-function uiUpdateTopbar() {
+function uiUpdateMapTopbar() {
   const state    = getState();
   const progress = getProgressInfo();
 
-  document.getElementById("main-player-name").textContent   = state.player.name;
-  document.getElementById("main-position").textContent      = state.player.position;
-  document.getElementById("main-progress-text").textContent = progress.progressText;
-  document.getElementById("main-fans").textContent          = `👥 ${state.fans.toLocaleString()}`;
-  document.getElementById("main-money").textContent         = formatMoney(state.money);
-}
-
-// =============================================================
-// 選手カード（左カラム）
-// =============================================================
-
-/**
- * 選手カードの全要素（ポジションバッジ・能力値バー・コンディション・戦績）を更新する。
- */
-function uiRenderPlayerCard() {
-  const state = getState();
-
-  // ポジションバッジ
-  const posMap = {
-    エース: "ACE", セッター: "SET", リベロ: "LIB",
-    ミドル: "MID", オポジット: "OPP", ウイング: "WNG",
-  };
-  document.getElementById("card-position-badge").textContent =
-    posMap[state.player.position] || state.player.position;
-
-  // 能力値バー
-  _renderCardStats();
-
-  // コンディション（疲労・GP）
-  _renderCardCondition();
-
-  // 戦績
-  _renderCardRecord();
+  _setText("map-player-name",   state.player.name);
+  _setText("map-position",      state.player.position);
+  _setText("map-team-name",     state.career.teamName);
+  _setText("map-progress-text", progress.progressText);
+  _setText("map-evaluation",    `評価 ${state.career.evaluation}`);
+  _setText("map-money",         _formatMoney(state.money));
 }
 
 /**
- * 選手カードの能力値バーを描画する内部関数。
- * プレー能力値（スパイク・レシーブ・サーブ・ブロック・トス）を表示する。
+ * マップ Canvas を描画し、ロケーションボタンを生成する。
+ * 画面を開くたびに1回呼ぶ。
  */
-function _renderCardStats() {
-  const state     = getState();
-  const container = document.getElementById("card-stats");
+function uiRenderMap() {
+  _drawMapCanvas();
+  _renderLocationButtons();
+}
+
+/**
+ * マップ背景を Canvas に描画する内部関数。
+ * 街並みを簡易的に表現する。
+ */
+function _drawMapCanvas() {
+  const canvas = document.getElementById("map-canvas");
+  if (!canvas) return;
+  const ctx = canvas.getContext("2d");
+  const W = 800, H = 510;
+
+  // --- 背景（夜の街）---
+  const skyGrad = ctx.createLinearGradient(0, 0, 0, H);
+  skyGrad.addColorStop(0,   "#04080f");
+  skyGrad.addColorStop(0.5, "#070c1c");
+  skyGrad.addColorStop(1,   "#0a1228");
+  ctx.fillStyle = skyGrad;
+  ctx.fillRect(0, 0, W, H);
+
+  // --- 星 ---
+  ctx.fillStyle = "rgba(200,220,255,0.6)";
+  const stars = [[80,40],[200,25],[350,55],[500,20],[650,45],[720,30],[140,80],[420,70],[580,60],[750,85]];
+  stars.forEach(([x, y]) => {
+    ctx.beginPath();
+    ctx.arc(x, y, 1.2, 0, Math.PI * 2);
+    ctx.fill();
+  });
+
+  // --- 遠景ビル群 ---
+  ctx.fillStyle = "#0c1428";
+  [[50,280,40,120],[110,260,30,140],[160,290,50,110],[240,250,35,130],
+   [310,270,45,120],[380,245,30,145],[450,275,50,115],[530,260,35,130],
+   [600,285,40,105],[660,255,30,135],[710,280,45,110],[760,265,30,125]]
+    .forEach(([x, y, w, h]) => ctx.fillRect(x, y, w, h));
+
+  // ビルの窓（点滅感）
+  ctx.fillStyle = "rgba(255,240,160,0.3)";
+  for (let i = 0; i < 40; i++) {
+    const bx = 50 + (i * 37) % 700;
+    const by = 258 + (i * 13) % 100;
+    if ((i * 7 + 3) % 5 !== 0) ctx.fillRect(bx, by, 4, 5);
+  }
+
+  // --- 道路（石畳風） ---
+  const roadGrad = ctx.createLinearGradient(0, 360, 0, H);
+  roadGrad.addColorStop(0, "#0c1426");
+  roadGrad.addColorStop(1, "#080e1c");
+  ctx.fillStyle = roadGrad;
+  ctx.fillRect(0, 360, W, H - 360);
+
+  // 道路の区画線
+  ctx.strokeStyle = "rgba(30,60,120,0.4)";
+  ctx.lineWidth = 1;
+  for (let x = 0; x < W; x += 80) {
+    ctx.beginPath();
+    ctx.moveTo(x, 360);
+    ctx.lineTo(x, H);
+    ctx.stroke();
+  }
+  ctx.beginPath();
+  ctx.moveTo(0, 390);
+  ctx.lineTo(W, 390);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(0, 440);
+  ctx.lineTo(W, 440);
+  ctx.stroke();
+
+  // --- 建物の輪郭ライン ---
+  ctx.strokeStyle = "rgba(20,50,130,0.3)";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(0, 360);
+  ctx.lineTo(W, 360);
+  ctx.stroke();
+
+  // --- ロケーション名のアクセント光 ---
+  MAP_LOCATIONS.forEach((loc) => {
+    const glow = ctx.createRadialGradient(loc.x, loc.y, 0, loc.x, loc.y, 55);
+    glow.addColorStop(0, "rgba(30,80,200,0.15)");
+    glow.addColorStop(1, "rgba(30,80,200,0)");
+    ctx.fillStyle = glow;
+    ctx.beginPath();
+    ctx.arc(loc.x, loc.y, 55, 0, Math.PI * 2);
+    ctx.fill();
+  });
+}
+
+/**
+ * マップ上のロケーションボタンを生成する内部関数。
+ * 各ロケーションのCanvas座標に absolute 配置する。
+ */
+function _renderLocationButtons() {
+  const container = document.getElementById("map-location-btns");
+  if (!container) return;
   container.innerHTML = "";
 
-  // カードに表示する能力値（主要6つに絞る）
-  const displayKeys = ["spike", "receive", "serve", "block", "toss", "technique"];
+  const locStatus = getMapLocationStatus();
 
-  displayKeys.forEach((key) => {
-    const def = STAT_DEFINITIONS.find((d) => d.key === key);
-    if (!def) return;
+  MAP_LOCATIONS.forEach((loc) => {
+    const status = locStatus[loc.id] || { available: true, reason: null };
 
-    const value      = state.stats[key] || 0;
-    const barPercent = (value / GAME_CONFIG.STAT_MAX) * 100;
+    const btn = document.createElement("button");
+    btn.className  = "map-loc-btn";
+    btn.dataset.locId = loc.id;
+    btn.style.left = `${loc.x}px`;
+    btn.style.top  = `${loc.y}px`;
+
+    if (!status.available) btn.classList.add("locked");
+
+    btn.innerHTML = `
+      <span class="map-loc-icon">${loc.icon}</span>
+      <span class="map-loc-label">${loc.label}</span>
+    `;
+
+    btn.addEventListener("click", () => onMapLocationClick(loc.id, status));
+    container.appendChild(btn);
+  });
+}
+
+/**
+ * マップポップアップを開く。
+ * ロケーションボタンクリック時に main.js から呼ばれる。
+ *
+ * @param {string} locId - MAP_LOCATIONS の id
+ * @param {{ available: boolean, reason: string|null }} status
+ */
+function uiOpenMapPopup(locId) {
+  const loc    = MAP_LOCATIONS.find((l) => l.id === locId);
+  const status = getMapLocationStatus()[locId] || { available: true, reason: null };
+  if (!loc) return;
+
+  _setText("popup-icon",  loc.icon);
+  _setText("popup-title", loc.label);
+  _setText("popup-desc",  loc.desc);
+
+  // ポップアップアクションを生成する
+  const actionsEl = document.getElementById("popup-actions");
+  actionsEl.innerHTML = "";
+
+  const actions = _getLocationActions(locId, status);
+  actions.forEach((action) => {
+    const btn = document.createElement("button");
+    btn.className = "popup-action-btn" + (action.primary ? " primary-action" : "");
+    btn.disabled  = action.disabled || false;
+    btn.innerHTML = `<span>${action.icon}</span><span>${action.label}</span>`;
+    if (action.note) {
+      const noteEl = document.createElement("div");
+      noteEl.className   = "popup-action-note";
+      noteEl.textContent = action.note;
+    }
+    btn.addEventListener("click", () => {
+      uiCloseMapPopup();
+      action.handler();
+    });
+    actionsEl.appendChild(btn);
+  });
+
+  document.getElementById("map-popup").style.display = "block";
+}
+
+/**
+ * マップポップアップを閉じる。
+ */
+function uiCloseMapPopup() {
+  const popup = document.getElementById("map-popup");
+  if (popup) popup.style.display = "none";
+}
+
+/**
+ * ロケーションごとのアクション定義を返す内部関数。
+ *
+ * @param {string} locId
+ * @param {{ available: boolean, reason: string|null }} status
+ * @returns {Array<{ icon, label, primary, disabled, handler }>}
+ */
+function _getLocationActions(locId, status) {
+  const state = getState();
+
+  switch (locId) {
+    case "home":
+      return [
+        {
+          icon: "😴", label: "休息（疲労回復）",
+          primary: false, disabled: false,
+          handler: () => onHomeRest(),
+        },
+        {
+          icon: "💾", label: "セーブ",
+          primary: false, disabled: false,
+          handler: () => onSave(),
+        },
+      ];
+
+    case "gym": {
+      const locked = state.career.trainedThisMatch;
+      return [
+        {
+          icon: "🏋️", label: locked ? "トレーニング（次の試合後まで不可）" : "トレーニング",
+          primary: !locked, disabled: locked,
+          handler: () => openTraining(),
+        },
+        {
+          icon: "📈", label: "成長ポイント振り分け",
+          primary: false, disabled: false,
+          handler: () => openGrowth(),
+        },
+      ];
+    }
+
+    case "stadium": {
+      const nextMatch = getNextMatch();
+      const canPlay   = canPlayNextMatch();
+      return [
+        {
+          icon: "🏆",
+          label: canPlay ? `試合へ：${nextMatch.label}` : "試合の予定なし",
+          primary: canPlay, disabled: !canPlay,
+          handler: () => {
+            if (canPlay) openMatch(nextMatch.matchType, nextMatch.label);
+          },
+        },
+      ];
+    }
+
+    case "agent":
+      return [
+        {
+          icon: "🏢", label: "エージェントに会う",
+          primary: true, disabled: false,
+          handler: () => openAgent(),
+        },
+      ];
+
+    case "shop":
+      return [
+        {
+          icon: "🏪", label: "近日公開",
+          primary: false, disabled: true,
+          handler: () => {},
+        },
+      ];
+
+    default:
+      return [];
+  }
+}
+
+// =============================================================
+// 選手作成画面：ポイント振り分けUI
+// =============================================================
+
+/**
+ * 選手作成画面のポイント振り分けUIを初期化する。
+ * openCreate() から呼ばれる。
+ */
+function uiInitCreateStats() {
+  // 残りポイントを初期値にリセットする
+  _createPointsRemain = GAME_CONFIG.CREATE_POINTS;
+  _createAllocated    = {};
+
+  // 各能力値の初期値をセットする
+  STAT_DEFINITIONS.forEach((def) => {
+    _createAllocated[def.key] = 0;
+  });
+
+  _setText("create-points-remain", _createPointsRemain);
+
+  // 基礎能力・プレー能力のボタン行を生成する
+  _renderCreateStatRows("create-stats-basic", STAT_CATEGORIES.BASIC);
+  _renderCreateStatRows("create-stats-play",  STAT_CATEGORIES.PLAY);
+
+  // 身長スライダーのイベントを設定する
+  const slider = document.getElementById("slider-height");
+  if (slider) {
+    slider.value = 175;
+    _setText("display-height", "175 cm");
+    slider.addEventListener("input", () => {
+      _setText("display-height", `${slider.value} cm`);
+    });
+  }
+}
+
+/** 振り分け中の残りポイント（モジュール内変数） */
+let _createPointsRemain = GAME_CONFIG.CREATE_POINTS;
+/** 振り分け済みの各能力値の増加量 */
+let _createAllocated = {};
+
+/**
+ * 指定カテゴリの能力値振り分け行を生成する内部関数。
+ *
+ * @param {string} containerId
+ * @param {string} category - STAT_CATEGORIES の値
+ */
+function _renderCreateStatRows(containerId, category) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+  container.innerHTML = "";
+
+  const defs = STAT_DEFINITIONS.filter((d) => d.category === category);
+
+  defs.forEach((def) => {
+    const currentVal = def.initial + (_createAllocated[def.key] || 0);
 
     const row = document.createElement("div");
-    row.className = "stat-row";
+    row.className = "create-stat-row";
+    row.id        = `create-row-${def.key}`;
+
     row.innerHTML = `
-      <span class="stat-label">${def.label}</span>
-      <div class="stat-bar-bg">
-        <div class="stat-bar-fill" style="width:${barPercent.toFixed(1)}%;"></div>
+      <span class="create-stat-name">${def.label}</span>
+      <div class="create-stat-controls">
+        <button class="create-stat-btn" id="cs-minus-${def.key}"
+                data-key="${def.key}" data-dir="-1">－</button>
+        <span class="create-stat-val" id="cs-val-${def.key}">${currentVal}</span>
+        <button class="create-stat-btn" id="cs-plus-${def.key}"
+                data-key="${def.key}" data-dir="1">＋</button>
       </div>
-      <span class="stat-val">${value}</span>
     `;
+
     container.appendChild(row);
   });
+
+  // ＋／－ボタンのイベントを登録する
+  container.querySelectorAll(".create-stat-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const key = btn.dataset.key;
+      const dir = parseInt(btn.dataset.dir, 10);
+      _onCreateStatChange(key, dir);
+    });
+  });
+
+  _refreshCreateStatButtons();
 }
 
 /**
- * 選手カードのコンディション（疲労バー・GP）を更新する内部関数。
+ * ＋／－ボタンクリック時の処理。
+ *
+ * @param {string} key - 能力値キー
+ * @param {number} dir - +1 or -1
  */
-function _renderCardCondition() {
-  const state = getState();
+function _onCreateStatChange(key, dir) {
+  const alloc   = _createAllocated[key] || 0;
+  const def     = STAT_DEFINITIONS.find((d) => d.key === key);
+  const current = def.initial + alloc;
 
-  // 疲労バー幅
-  const fatigueBar = document.getElementById("card-fatigue-bar");
-  if (fatigueBar) {
-    fatigueBar.style.width = `${state.fatigue}%`;
-  }
-
-  // 疲労ラベル文字
-  const fatigueStatus = getFatigueStatus(state.fatigue);
-  const fatigueVal    = document.getElementById("card-fatigue-val");
-  if (fatigueVal) {
-    fatigueVal.textContent = fatigueStatus.label;
-    fatigueVal.style.color = fatigueStatus.color;
-  }
-
-  // GP表示
-  const gpEl = document.getElementById("card-gp");
-  if (gpEl) {
-    gpEl.textContent = `${state.growthPoints} GP`;
-  }
-}
-
-/**
- * 選手カードの戦績エリアを更新する内部関数。
- */
-function _renderCardRecord() {
-  const r         = getState().record;
-  const container = document.getElementById("card-record");
-  if (!container) return;
-
-  container.innerHTML = `
-    <div class="record-line">
-      <span>通算</span>
-      <span class="record-val">${r.totalWins}勝 ${r.totalLosses}敗</span>
-    </div>
-    <div class="record-line">
-      <span>MVP</span>
-      <span class="record-val">${r.mvpCount}回</span>
-    </div>
-    <div class="record-line">
-      <span>全国優勝</span>
-      <span class="record-val">${r.nationalCupWins}回</span>
-    </div>
-  `;
-}
-
-// =============================================================
-// 次の試合予告パネル
-// =============================================================
-
-/**
- * 「次の試合」パネルを更新する。
- */
-function uiUpdateNextMatchPanel() {
-  const nextMatch = getNextMatchEvent();
-  const el        = document.getElementById("next-match-info");
-  if (!el) return;
-
-  if (nextMatch) {
-    const reward = MATCH_REWARDS[nextMatch.matchType];
-    el.innerHTML =
-      `<strong>${nextMatch.label}</strong><br>` +
-      `${nextMatch.year}年目 ${nextMatch.month}月 第${nextMatch.week}週` +
-      `　賞金: <span style="color:#60e080;">${formatMoney(reward?.prizeMoney ?? 0)}</span>`;
+  if (dir > 0) {
+    // ポイントが残っているか・上限に達していないか確認する
+    if (_createPointsRemain <= 0) return;
+    if (current >= GAME_CONFIG.STAT_MAX) return;
+    _createAllocated[key]  = alloc + 1;
+    _createPointsRemain--;
   } else {
-    el.textContent = "試合なし";
+    // 0未満には下げられない
+    if (alloc <= 0) return;
+    _createAllocated[key]  = alloc - 1;
+    _createPointsRemain++;
   }
+
+  // 表示を更新する
+  const valEl = document.getElementById(`cs-val-${key}`);
+  if (valEl) valEl.textContent = def.initial + _createAllocated[key];
+  _setText("create-points-remain", _createPointsRemain);
+  _refreshCreateStatButtons();
 }
 
-// =============================================================
-// 月間カレンダー
-// =============================================================
-
 /**
- * 月間カレンダー（4週分）を描画する。
- * 現在週・過去週・試合週を色分けして表示する。
+ * ＋／－ボタンの有効/無効を更新する。
  */
-function uiRenderCalendar() {
-  const calendar  = getMonthCalendar();
-  const container = document.getElementById("main-calendar");
-  if (!container) return;
-  container.innerHTML = "";
+function _refreshCreateStatButtons() {
+  STAT_DEFINITIONS.forEach((def) => {
+    if (def.category === STAT_CATEGORIES.PHYSIQUE) return;
 
-  calendar.forEach((week) => {
-    const cell = document.createElement("div");
-    cell.className = "cal-week";
+    const alloc   = _createAllocated[def.key] || 0;
+    const current = def.initial + alloc;
 
-    if (week.isCurrent) cell.classList.add("current");
-    if (week.isPast)    cell.classList.add("done");
-    if (week.hasMatch)  cell.classList.add("match-week");
+    const plusBtn  = document.getElementById(`cs-plus-${def.key}`);
+    const minusBtn = document.getElementById(`cs-minus-${def.key}`);
 
-    // ラベルと試合アイコン
-    const labelDiv = document.createElement("div");
-    labelDiv.className   = "cal-week-label";
-    labelDiv.textContent = `第${week.week}週`;
-
-    const eventDiv = document.createElement("div");
-    eventDiv.className   = "cal-week-event";
-    eventDiv.textContent = week.hasMatch ? _shortMatchLabel(week.matchType) : "";
-
-    cell.appendChild(labelDiv);
-    cell.appendChild(eventDiv);
-    container.appendChild(cell);
+    if (plusBtn)  plusBtn.disabled  = _createPointsRemain <= 0 || current >= GAME_CONFIG.STAT_MAX;
+    if (minusBtn) minusBtn.disabled = alloc <= 0;
   });
 }
 
-// =============================================================
-// アクションメニュー・試合ボタン有効制御
-// =============================================================
-
 /**
- * メインメニューの「試合へ」ボタンの有効/無効を、
- * 現在週に試合があるかどうかで切り替える。
- */
-function uiUpdateMatchButton() {
-  const state = getState();
-  const btn   = document.getElementById("btn-go-match");
-  if (!btn) return;
-
-  btn.disabled = !state.currentScheduledMatch;
-}
-
-/**
- * 今週の行動完了通知を表示/非表示する。
+ * 作成画面で確定したステータスを返す。
+ * main.js の onStartGame() から呼ばれる。
  *
- * @param {boolean} show - true で表示
+ * @returns {Object} { key: value, ... }
  */
-function uiShowActionDoneNotice(show) {
-  const el = document.getElementById("action-done-notice");
-  if (el) el.style.display = show ? "block" : "none";
+function uiGetCreateStats() {
+  const result = {};
+  const heightSlider = document.getElementById("slider-height");
+
+  STAT_DEFINITIONS.forEach((def) => {
+    if (def.key === "height") {
+      result[def.key] = heightSlider ? parseInt(heightSlider.value, 10) : def.initial;
+    } else {
+      result[def.key] = def.initial + (_createAllocated[def.key] || 0);
+    }
+  });
+  return result;
 }
 
 // =============================================================
@@ -234,29 +450,25 @@ function uiShowActionDoneNotice(show) {
 // =============================================================
 
 /**
- * トレーニング画面のヘッダー情報（疲労・資金）を更新する。
+ * トレーニング画面のヘッダー（疲労・資金）を更新する。
  */
 function uiUpdateTrainingHeader() {
-  const state = getState();
-
+  const state         = getState();
   const fatigueStatus = getFatigueStatus(state.fatigue);
-  const labelEl = document.getElementById("training-fatigue-label");
-  const valEl   = document.getElementById("training-fatigue-val");
 
-  if (labelEl) {
-    labelEl.textContent = fatigueStatus.label;
-    labelEl.style.color = fatigueStatus.color;
-  }
-  if (valEl) {
-    valEl.textContent = state.fatigue;
-  }
+  const lbl  = document.getElementById("training-fatigue-label");
+  const lbl2 = document.getElementById("training-fatigue-label2");
+  const val  = document.getElementById("training-fatigue-val");
+  const mon  = document.getElementById("training-money");
 
-  const moneyEl = document.getElementById("training-money");
-  if (moneyEl) moneyEl.textContent = formatMoney(state.money);
+  if (lbl)  { lbl.textContent  = fatigueStatus.label; lbl.style.color  = fatigueStatus.color; }
+  if (lbl2) { lbl2.textContent = fatigueStatus.label; lbl2.style.color = fatigueStatus.color; }
+  if (val)  val.textContent  = state.fatigue;
+  if (mon)  mon.textContent  = _formatMoney(state.money);
 }
 
 /**
- * トレーニング選択画面のカード一覧を描画する。
+ * トレーニングカード一覧を描画する。
  */
 function uiRenderTrainingCards() {
   const items     = getTrainingMenuItems();
@@ -266,46 +478,28 @@ function uiRenderTrainingCards() {
 
   items.forEach((item) => {
     const card = document.createElement("div");
-    card.className = "training-card";
+    card.className = "training-card" + (item.canDo ? "" : " disabled");
 
-    if (!item.canDo) card.classList.add("disabled");
-
-    // GP表示テキスト
-    const gpText = item.gpMax === 0
-      ? "疲労回復"
-      : `+${item.gpMin}〜${item.gpMax} GP`;
-
-    // コスト表示テキスト
-    const costText = item.cost === 0
-      ? "費用：無料"
-      : `費用：${formatMoney(item.cost)}`;
-
-    // 疲労変化テキスト
+    const gpText      = item.gpMax === 0 ? "疲労回復" : `+${item.gpMin}〜${item.gpMax} GP`;
     const fatigueText = item.fatigueChange < 0
       ? `疲労 ${item.fatigueChange}（回復）`
       : `疲労 +${item.fatigueChange}`;
+    const fatigueColor = item.fatigueChange < 0 ? "#50d080" : "#ff8840";
 
     card.innerHTML = `
       <div class="tc-icon">${item.icon}</div>
       <div class="tc-name">${item.name}</div>
       <div class="tc-desc">${item.description.replace(/\n/g, "<br>")}</div>
-      <div class="tc-cost">${costText}</div>
-      <div class="tc-effect" style="color:${item.fatigueChange < 0 ? "#60e080" : "#ff9040"}">
-        ${fatigueText}
-      </div>
-      <div class="tc-effect" style="color:${item.gpMax === 0 ? "#a0c4ff" : "#40ff80"}">
-        ${gpText}
-      </div>
+      <div class="tc-effect" style="color:${fatigueColor}">${fatigueText}</div>
+      <div class="tc-effect" style="color:${item.gpMax === 0 ? "#7090c0" : "#50d080"}">${gpText}</div>
       ${!item.canDo
-        ? `<div style="font-size:10px; color:#ff6060; margin-top:2px;">${item.reason}</div>`
+        ? `<div style="font-size:10px;color:#e04040;margin-top:2px;">${item.reason}</div>`
         : ""}
     `;
 
-    // 実行可能な場合のみクリックイベントを登録する
     if (item.canDo) {
       card.addEventListener("click", () => onTrainingCardClick(item.id));
     }
-
     container.appendChild(card);
   });
 }
@@ -315,14 +509,11 @@ function uiRenderTrainingCards() {
 // =============================================================
 
 /**
- * 成長ポイント振り分け画面の能力値リストをカテゴリごとに描画する。
+ * 成長ポイント振り分け画面の能力値リストを描画する。
  */
 function uiRenderGrowthStats() {
   const state = getState();
-
-  // GP残量表示を更新
-  const gpEl = document.getElementById("growth-gp-remain");
-  if (gpEl) gpEl.textContent = state.growthPoints;
+  _setText("growth-gp-remain", state.growthPoints);
 
   const categoryMap = {
     [STAT_CATEGORIES.BASIC]:    "growth-stats-basic",
@@ -335,59 +526,47 @@ function uiRenderGrowthStats() {
     if (!container) return;
     container.innerHTML = "";
 
-    const defs = STAT_DEFINITIONS.filter((d) => d.category === catKey);
-
-    defs.forEach((def) => {
+    STAT_DEFINITIONS.filter((d) => d.category === catKey).forEach((def) => {
       const value   = state.stats[def.key];
       const isFixed = def.isFixed;
-
-      // 必要GPを計算する
       const costEntry = GP_COST_TABLE.find((e) => value < e.thresholdBelow);
       const gpCost    = isFixed ? null : (costEntry ? costEntry.gpCost : 5);
-
-      // バー幅を計算する（身長は実数換算）
-      const barPercent = def.key === "height"
+      const barPct    = def.key === "height"
         ? Math.min(100, ((value - 150) / 60) * 100)
         : (value / GAME_CONFIG.STAT_MAX) * 100;
 
       const row = document.createElement("div");
       row.className       = "growth-stat-row";
       row.dataset.statKey = def.key;
-
       row.innerHTML = `
         <span class="gs-label">${def.label}</span>
         <div class="gs-bar-bg">
-          <div class="gs-bar-fill" id="gs-bar-${def.key}" style="width:${barPercent.toFixed(1)}%;"></div>
+          <div class="gs-bar-fill" id="gs-bar-${def.key}" style="width:${barPct.toFixed(1)}%;"></div>
         </div>
         <span class="gs-val" id="gs-val-${def.key}">${value}</span>
         <span class="gs-cost">${isFixed ? "固定" : `${gpCost}GP`}</span>
         ${isFixed
           ? `<span class="gs-fixed">変更不可</span>`
-          : `<button class="gs-btn-up" id="gs-up-${def.key}" data-key="${def.key}">＋</button>`
-        }
+          : `<button class="gs-btn-up" id="gs-up-${def.key}" data-key="${def.key}">＋</button>`}
       `;
-
       container.appendChild(row);
     });
   });
 
-  // ＋ボタンのイベントを一括登録する
   _attachGrowthButtons();
   uiRefreshGrowthButtons();
 }
 
 /**
- * 成長画面の ＋ボタンにクリックイベントを登録する内部関数。
+ * 成長画面の ＋ ボタンにイベントを登録する内部関数。
  */
 function _attachGrowthButtons() {
   document.querySelectorAll(".gs-btn-up").forEach((btn) => {
     btn.addEventListener("click", () => {
-      const key    = btn.dataset.key;
-      const result = spendGPToUpgradeStat(key);
+      const result = spendGPToUpgradeStat(btn.dataset.key);
       if (result.success) {
-        _refreshGrowthRow(key);
-        const gpEl = document.getElementById("growth-gp-remain");
-        if (gpEl) gpEl.textContent = getState().growthPoints;
+        _refreshGrowthRow(btn.dataset.key);
+        _setText("growth-gp-remain", getState().growthPoints);
         uiRefreshGrowthButtons();
       }
     });
@@ -395,24 +574,21 @@ function _attachGrowthButtons() {
 }
 
 /**
- * 成長画面の1行分（バー・数値）を再描画する。
- *
- * @param {string} key - 更新する能力値キー
+ * 成長画面の1行（バー・数値）を部分更新する。
+ * @param {string} key
  */
 function _refreshGrowthRow(key) {
-  const state = getState();
-  const value = state.stats[key];
+  const value = getState().stats[key];
   const def   = STAT_DEFINITIONS.find((d) => d.key === key);
   if (!def) return;
 
-  const barPercent = def.key === "height"
+  const barPct = def.key === "height"
     ? Math.min(100, ((value - 150) / 60) * 100)
     : (value / GAME_CONFIG.STAT_MAX) * 100;
 
   const barEl = document.getElementById(`gs-bar-${key}`);
-  if (barEl) barEl.style.width = `${barPercent.toFixed(1)}%`;
-
   const valEl = document.getElementById(`gs-val-${key}`);
+  if (barEl) barEl.style.width = `${barPct.toFixed(1)}%`;
   if (valEl) valEl.textContent = value;
 }
 
@@ -425,60 +601,154 @@ function uiRefreshGrowthButtons() {
 
   STAT_DEFINITIONS.forEach((def) => {
     if (def.isFixed) return;
-
     const value     = state.stats[def.key];
     const costEntry = GP_COST_TABLE.find((e) => value < e.thresholdBelow);
     const cost      = costEntry ? costEntry.gpCost : 5;
-
-    const btn = document.getElementById(`gs-up-${def.key}`);
-    if (btn) {
-      btn.disabled = gp < cost || value >= GAME_CONFIG.STAT_MAX;
-    }
+    const btn       = document.getElementById(`gs-up-${def.key}`);
+    if (btn) btn.disabled = gp < cost || value >= GAME_CONFIG.STAT_MAX;
   });
 }
 
 // =============================================================
-// 試合画面：スコアバー更新
+// エージェント（移籍）画面
 // =============================================================
 
 /**
- * 試合画面のスコアバーを更新する。
+ * エージェント画面を全描画する。
+ * openAgent() から呼ばれる。
+ */
+function uiRenderAgentScreen() {
+  const state = getState();
+  _setText("agent-evaluation", `評価 ${state.career.evaluation}`);
+
+  _renderAgentCurrentTeam();
+  _renderAgentOffers();
+  _renderAgentRequestTargets();
+}
+
+/**
+ * 現在のチーム情報を描画する内部関数。
+ */
+function _renderAgentCurrentTeam() {
+  const state     = getState();
+  const container = document.getElementById("agent-current-team");
+  if (!container) return;
+
+  const team = TEAM_TABLE.find((t) => t.id === state.career.teamId);
+  if (!team) return;
+
+  container.innerHTML = `
+    <div class="agent-current-team-card">
+      <span class="agent-team-tier">Tier ${team.tier}</span>
+      <div class="agent-team-info">
+        <div class="agent-team-name">${team.name}</div>
+        <div class="agent-team-salary">月給: ${_formatMoney(team.salary)}</div>
+      </div>
+    </div>
+  `;
+}
+
+/**
+ * 移籍オファー一覧を描画する内部関数。
+ */
+function _renderAgentOffers() {
+  const container = document.getElementById("agent-offers");
+  if (!container) return;
+
+  const offers = getTransferOffers();
+  if (offers.length === 0) {
+    container.innerHTML = `<div class="agent-no-items">現在オファーはありません</div>`;
+    return;
+  }
+
+  container.innerHTML = "";
+  offers.forEach((offer) => {
+    const team = TEAM_TABLE.find((t) => t.id === offer.teamId);
+    if (!team) return;
+
+    const card = document.createElement("div");
+    card.className = "agent-offer-card highlight";
+    card.innerHTML = `
+      <span class="offer-tier-badge">Tier ${team.tier}</span>
+      <div class="offer-info">
+        <div class="offer-team-name">${team.name}</div>
+        <div class="offer-salary">月給: ${_formatMoney(team.salary)}</div>
+        <div class="offer-expires">期限: あと${offer.expiresAfterMatch - getState().career.matchIndex}試合</div>
+      </div>
+      <button class="btn-accept-offer" data-team-id="${team.id}">承諾</button>
+    `;
+    container.appendChild(card);
+  });
+
+  // 承諾ボタンのイベントを登録する
+  container.querySelectorAll(".btn-accept-offer").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      onAcceptTransferOffer(btn.dataset.teamId);
+    });
+  });
+}
+
+/**
+ * 移籍申請ターゲット一覧を描画する内部関数。
+ */
+function _renderAgentRequestTargets() {
+  const container = document.getElementById("agent-request-targets");
+  if (!container) return;
+
+  const targets = getTransferRequestTargets();
+  if (targets.length === 0) {
+    container.innerHTML = `<div class="agent-no-items">最高ティアに所属中です</div>`;
+    return;
+  }
+
+  container.innerHTML = "";
+  targets.forEach(({ team, threshold, canRequest }) => {
+    const row = document.createElement("div");
+    row.className = "agent-request-row";
+    row.innerHTML = `
+      <span class="req-tier">Tier ${team.tier}</span>
+      <span class="req-team">${team.name}</span>
+      <span class="req-threshold">評価 ${threshold} 必要</span>
+      <button class="btn-request-transfer" data-team-id="${team.id}"
+              ${canRequest ? "" : "disabled"}>申請</button>
+    `;
+    container.appendChild(row);
+  });
+
+  container.querySelectorAll(".btn-request-transfer").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      onRequestTransfer(btn.dataset.teamId);
+    });
+  });
+}
+
+// =============================================================
+// 試合画面：スコアバー・フェーズUI
+// =============================================================
+
+/**
+ * 試合スコアバーを更新する。
  * match.js の _addPoint から呼ばれる。
  *
- * @param {{ mySets, oppSets, myPts, oppPts, setNum }} score - 現在のスコア
+ * @param {{ mySets, oppSets, myPts, oppPts, setNum }} score
  */
 function updateScoreUI(score) {
-  const el = {
-    myPt    : document.getElementById("match-my-pt"),
-    oppPt   : document.getElementById("match-opp-pt"),
-    mySets  : document.getElementById("match-my-sets"),
-    oppSets : document.getElementById("match-opp-sets"),
-    setLabel: document.getElementById("match-set-label"),
-  };
-
-  if (el.myPt)     el.myPt.textContent     = score.myPts;
-  if (el.oppPt)    el.oppPt.textContent    = score.oppPts;
-  if (el.mySets)   el.mySets.textContent   = score.mySets;
-  if (el.oppSets)  el.oppSets.textContent  = score.oppSets;
-  if (el.setLabel) el.setLabel.textContent = `第${score.setNum}セット`;
+  _setText("match-my-pt",    score.myPts);
+  _setText("match-opp-pt",   score.oppPts);
+  _setText("match-my-sets",  score.mySets);
+  _setText("match-opp-sets", score.oppSets);
+  _setText("match-set-label", `第${score.setNum}セット`);
 }
 
 /**
- * 試合開始時にスコアバーの選手名・相手名を設定する。
- *
- * @param {string} myName   - 自選手名
- * @param {string} oppName  - 相手チーム名
+ * スコアバーの選手名・相手名を設定する。
+ * @param {string} myName
+ * @param {string} oppName
  */
 function uiSetMatchNames(myName, oppName) {
-  const myEl  = document.getElementById("match-my-name");
-  const oppEl = document.getElementById("match-opp-name");
-  if (myEl)  myEl.textContent  = myName;
-  if (oppEl) oppEl.textContent = oppName;
+  _setText("match-my-name",  myName);
+  _setText("match-opp-name", oppName);
 }
-
-// =============================================================
-// 試合画面：フェーズUI（ステータスラベル・コマンドボタン）
-// =============================================================
 
 /**
  * フェーズが変わったときに呼ばれ、ステータスラベルとコマンドボタンを更新する。
@@ -487,26 +757,27 @@ function uiSetMatchNames(myName, oppName) {
  * @param {string} phase - MATCH_PHASE の値
  */
 function updatePhaseUI(phase) {
-  // フェーズ状態ラベルを更新する
   const phaseLabels = {
-    [MATCH_PHASE.SERVE]:      "サーブ",
-    [MATCH_PHASE.RECEIVE]:    "レシーブ",
-    [MATCH_PHASE.SET]:        "トス（自動）",
-    [MATCH_PHASE.ATTACK]:     "スパイク",
-    [MATCH_PHASE.OPP_RETURN]: "相手の攻撃",
-    [MATCH_PHASE.POINT]:      "ポイント",
+    [MATCH_PHASE.SERVE]:      "🏐 サーブ",
+    [MATCH_PHASE.RECEIVE]:    "↔️ レシーブ",
+    [MATCH_PHASE.TOSS]:       "⚙️ トス（自動）",
+    [MATCH_PHASE.SPIKE]:      "💥 スパイク",
+    [MATCH_PHASE.BLOCK]:      "🛡️ ブロック",
+    [MATCH_PHASE.AUTO_RALLY]: "▶️ ラリー中...",
+    [MATCH_PHASE.POINT]:      "✅ ポイント",
   };
 
-  const labelEl = document.getElementById("phase-status-label");
-  if (labelEl) labelEl.textContent = phaseLabels[phase] || phase;
-
-  // コマンドボタンを再描画する
+  _setText("phase-status-label", phaseLabels[phase] || phase);
   _renderCommandButtons(phase);
+
+  // 移動ボタンの強調：RECEIVE/BLOCK フェーズのみ有効感を出す
+  const moveActive = phase === MATCH_PHASE.RECEIVE || phase === MATCH_PHASE.BLOCK;
+  document.getElementById("btn-move-left") ?.classList.toggle("move-active", moveActive);
+  document.getElementById("btn-move-right")?.classList.toggle("move-active", moveActive);
 }
 
 /**
  * フェーズに応じたコマンドボタンを描画する内部関数。
- * PHASE_COMMANDS にコマンドがないフェーズはボタン非表示。
  *
  * @param {string} phase
  */
@@ -516,47 +787,47 @@ function _renderCommandButtons(phase) {
   container.innerHTML = "";
 
   const commands = PHASE_COMMANDS[phase];
+
+  // コマンドなしフェーズ：自動進行中メッセージ
   if (!commands || commands.length === 0) {
-    // コマンドなしフェーズ：自動進行中メッセージ
     const msg = document.createElement("div");
-    msg.style.cssText = "color:#3a5070; font-size:11px; text-align:center; padding:8px; width:100%;";
-    msg.textContent   = "自動進行中...";
+    msg.style.cssText =
+      "color:#2a3c58;font-size:11px;text-align:center;padding:8px;width:100%;grid-column:span 2;";
+    msg.textContent = "自動進行中...";
     container.appendChild(msg);
     return;
   }
 
+  // フェーズ別のボタンカラークラス
+  const phaseClass = {
+    [MATCH_PHASE.SERVE]:   "phase-serve",
+    [MATCH_PHASE.RECEIVE]: "phase-receive",
+    [MATCH_PHASE.SPIKE]:   "phase-spike",
+    [MATCH_PHASE.BLOCK]:   "phase-block",
+  }[phase] || "";
+
   commands.forEach((cmd) => {
     const btn = document.createElement("button");
-    btn.className       = "cmd-btn";
-    btn.dataset.cmdId   = cmd.id;
-    btn.dataset.phase   = phase;
-    btn.innerHTML       = `${cmd.label}<br><span style="font-size:9px; color:#5080a0;">${cmd.description}</span>`;
+    btn.className     = `cmd-btn ${phaseClass}`;
+    btn.dataset.cmdId = cmd.id;
+    btn.dataset.phase = phase;
+    btn.innerHTML     = `${cmd.label}<br>
+      <span style="font-size:9px;color:inherit;opacity:0.65;">${cmd.description}</span>`;
 
-    btn.addEventListener("click", () => {
-      executeCommand(cmd.id, phase);
-    });
-
+    btn.addEventListener("click", () => executeCommand(cmd.id, phase));
     container.appendChild(btn);
   });
 }
 
 /**
  * AUTO モードボタンの表示を切り替える。
- *
- * @param {boolean} isAuto - true ならAUT ON状態
+ * @param {boolean} isAuto
  */
 function uiUpdateAutoButton(isAuto) {
   const btn   = document.getElementById("btn-auto-toggle");
   const label = document.getElementById("auto-label");
-  if (!btn || !label) return;
-
-  label.textContent = isAuto ? "ON" : "OFF";
-
-  if (isAuto) {
-    btn.classList.add("active");
-  } else {
-    btn.classList.remove("active");
-  }
+  if (label) label.textContent = isAuto ? "ON" : "OFF";
+  if (btn)   btn.classList.toggle("active", isAuto);
 }
 
 // =============================================================
@@ -565,80 +836,61 @@ function uiUpdateAutoButton(isAuto) {
 
 /**
  * 試合リザルト画面の全要素を描画する。
- * match.js の _endMatch から openResult 経由で呼ばれる。
+ * screens.js の openResult から呼ばれる。
  *
- * @param {Object} result - 試合結果オブジェクト
- * @param {boolean}  result.win         - 勝利したか
- * @param {Object}   result.opponent    - 対戦相手情報 { name }
- * @param {string}   result.scoreText   - セットスコア文字列（例: "2-1"）
- * @param {boolean}  result.mvp        - MVP獲得したか
- * @param {Object}   result.grade       - グレードオブジェクト { grade, color, message }
- * @param {Object}   result.rewards     - 報酬情報 { prizeMoney, gpBonus, consolation }
- * @param {Object}   result.matchStats  - プレー統計 { spikeAttempts, spikeSuccess, ... }
+ * @param {Object} result
  */
 function uiRenderResultScreen(result) {
-  const { win, opponent, scoreText, mvp, grade, rewards, matchStats } = result;
+  const { win, opponent, scoreText, mvp, grade, rewards, matchStats, evalGain, newOffers } = result;
 
-  // --- グレード ---
-  const gradeEl   = document.getElementById("result-grade");
+  // グレード
+  const gradeEl    = document.getElementById("result-grade");
   const gradeMsgEl = document.getElementById("result-grade-msg");
-  if (gradeEl) {
-    gradeEl.textContent  = grade.grade;
-    gradeEl.style.color  = grade.color;
-  }
-  if (gradeMsgEl) gradeMsgEl.textContent = grade.message;
+  if (gradeEl)    { gradeEl.textContent = grade.grade; gradeEl.style.color = grade.color; }
+  if (gradeMsgEl)   gradeMsgEl.textContent = grade.message;
 
-  // --- 勝敗バッジ・スコア ---
+  // 勝敗バッジ・スコア
   const winBadge = document.getElementById("result-win-badge");
-  if (winBadge) {
-    winBadge.textContent  = win ? "勝利" : "敗北";
-    winBadge.className    = `win-badge ${win ? "win" : "lose"}`;
-  }
+  if (winBadge) { winBadge.textContent = win ? "勝利" : "敗北"; winBadge.className = `win-badge ${win ? "win" : "lose"}`; }
+  _setText("result-score-text", scoreText);
+  _setText("result-vs-text",    `vs. ${opponent.name}`);
 
-  const scoreEl = document.getElementById("result-score-text");
-  if (scoreEl) scoreEl.textContent = scoreText;
+  // プレー統計
+  const ms = matchStats;
+  _setText("result-spike-rate",   _rateStr(ms.spikeSuccess,   ms.spikeAttempts));
+  _setText("result-receive-rate", _rateStr(ms.receiveSuccess, ms.receiveAttempts));
+  _setText("result-block-rate",   _rateStr(ms.blockSuccess,   ms.blockAttempts));
+  _setText("result-contrib",      `${ms.pointContrib}点`);
 
-  const vsEl = document.getElementById("result-vs-text");
-  if (vsEl) vsEl.textContent = `vs. ${opponent.name}`;
+  // 評価値獲得
+  _setText("result-eval-val", `+${evalGain}`);
 
-  // --- プレー統計 ---
-  const spikeRate = matchStats.spikeAttempts > 0
-    ? Math.round(matchStats.spikeSuccess / matchStats.spikeAttempts * 100)
-    : 0;
-  const receiveRate = matchStats.receiveAttempts > 0
-    ? Math.round(matchStats.receiveSuccess / matchStats.receiveAttempts * 100)
-    : 0;
-
-  const spikeRateEl   = document.getElementById("result-spike-rate");
-  const receiveRateEl = document.getElementById("result-receive-rate");
-  const contribEl     = document.getElementById("result-contrib");
-
-  if (spikeRateEl)   spikeRateEl.textContent   = `${spikeRate}%`;
-  if (receiveRateEl) receiveRateEl.textContent  = `${receiveRate}%`;
-  if (contribEl)     contribEl.textContent      = `${matchStats.pointContrib}点`;
-
-  // --- 報酬パネル ---
+  // 報酬パネル
   const rewardsEl = document.getElementById("result-rewards-panel");
   if (rewardsEl) {
     rewardsEl.innerHTML = `
       <div class="reward-item">
-        <div class="reward-label">獲得賞金</div>
-        <div class="reward-val money">${formatMoney(win ? rewards.prizeMoney : rewards.consolation)}</div>
+        <div class="reward-label">賞金</div>
+        <div class="reward-val money">${_formatMoney(rewards.prizeMoney)}</div>
+      </div>
+      <div class="reward-item">
+        <div class="reward-label">月給</div>
+        <div class="reward-val salary">${_formatMoney(rewards.salary)}</div>
       </div>
       <div class="reward-item">
         <div class="reward-label">獲得GP</div>
         <div class="reward-val gp">+${rewards.gpBonus} GP</div>
       </div>
-      <div class="reward-item">
-        <div class="reward-label">ファン増加</div>
-        <div class="reward-val fans">+${rewards.fanDelta ? rewards.fanDelta.toLocaleString() : 0}</div>
-      </div>
     `;
   }
 
-  // --- MVP バッジ ---
+  // MVP バッジ
   const mvpEl = document.getElementById("mvp-badge");
   if (mvpEl) mvpEl.style.display = mvp ? "block" : "none";
+
+  // 移籍オファー通知
+  const offerNotice = document.getElementById("result-offer-notice");
+  if (offerNotice) offerNotice.style.display = (newOffers && newOffers.length > 0) ? "block" : "none";
 }
 
 // =============================================================
@@ -646,7 +898,7 @@ function uiRenderResultScreen(result) {
 // =============================================================
 
 /**
- * エンディング画面に3年間の成績まとめを描画する。
+ * エンディング画面に成績まとめを描画する。
  */
 function uiRenderEndingStats() {
   const state     = getState();
@@ -659,11 +911,12 @@ function uiRenderEndingStats() {
     .reduce((sum, d) => sum + state.stats[d.key], 0);
 
   container.innerHTML = `
+    <div>所属チーム：${state.career.teamName}（Tier ${state.career.teamTier}）</div>
     <div>通算成績：${r.totalWins}勝 ${r.totalLosses}敗</div>
     <div>MVP獲得：${r.mvpCount}回</div>
     <div>地方大会優勝：${r.localCupWins}回 / 全国大会優勝：${r.nationalCupWins}回 / 世界大会優勝：${r.worldCupWins}回</div>
     <div>最終能力値合計：${totalStats}　身長：${state.stats.height}cm</div>
-    <div>最終所持金：${formatMoney(state.money)}</div>
+    <div>最終評価値：${state.career.evaluation}　所持金：${_formatMoney(state.money)}</div>
   `;
 }
 
@@ -672,19 +925,32 @@ function uiRenderEndingStats() {
 // =============================================================
 
 /**
- * 試合種別から短い表示名を返す。カレンダーの狭いセルに表示するため短縮する。
- *
- * @param {string} matchType
+ * 指定IDの要素のテキストを設定する。
+ * @param {string} id
+ * @param {string|number} text
+ */
+function _setText(id, text) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = text;
+}
+
+/**
+ * 成功数/試行数から "xx%" 文字列を返す。
+ * @param {number} success
+ * @param {number} attempts
  * @returns {string}
  */
-function _shortMatchLabel(matchType) {
-  const labels = {
-    practice:        "練習",
-    local_league:    "地方L",
-    national_league: "全国L",
-    local_cup:       "地方杯",
-    national_cup:    "全国杯",
-    world_cup:       "世界杯",
-  };
-  return labels[matchType] || "試合";
+function _rateStr(success, attempts) {
+  if (!attempts) return "--%";
+  return `${Math.round(success / attempts * 100)}%`;
+}
+
+/**
+ * 金額を日本円形式でフォーマットする。
+ * @param {number} amount
+ * @returns {string}
+ */
+function _formatMoney(amount) {
+  if (amount == null) return "¥0";
+  return `¥${amount.toLocaleString()}`;
 }

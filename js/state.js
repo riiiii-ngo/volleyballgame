@@ -3,20 +3,17 @@
  * ゲームの「現在の状態」をすべて管理するファイル。
  *
  * 役割：
- *   - プレイヤーの能力値・資金・疲労度などを一元管理する
+ *   - プレイヤーの能力値・資金・疲労度・キャリア情報を一元管理する
  *   - 状態を変更する関数もここに定義する
  *   - UIやロジックは書かない（状態の保持と更新に専念する）
  *
  * 設計方針：
- *   - 状態は GameState オブジェクト1つにまとめる
+ *   - 状態は _state オブジェクト1つにまとめる
  *   - 外部からは getState() で読み取り、専用の更新関数で変更する
  *   - Godot移植時は GameManager.gd の変数群に相当する
  */
 
-// =============================================================
 // ゲーム状態オブジェクト（プライベート）
-// 外部から直接書き換えず、必ず更新関数を通して変更する
-// =============================================================
 let _state = null;
 
 // =============================================================
@@ -25,86 +22,85 @@ let _state = null;
 
 /**
  * ゲーム状態を初期値でリセットする。
- * 新しいゲーム開始時またはリスタート時に呼ぶ。
+ * キャラ作成完了時に呼ぶ。
  *
- * @param {string} playerName - 選手名（キャラクター作成画面で入力）
- * @param {string} position   - ポジション（例: "エース"、"リベロ" など）
+ * @param {string} playerName     - 選手名
+ * @param {string} position       - ポジション
+ * @param {Object} allocatedStats - 作成画面で振り分けた能力値 { key: value, ... }
  */
-function initState(playerName, position) {
-  // 能力値の初期値を STAT_DEFINITIONS から自動生成する
+function initState(playerName, position, allocatedStats) {
+  // 振り分け後の能力値をセットする（allocatedStats がなければ initial 値を使用）
   const initialStats = {};
   STAT_DEFINITIONS.forEach((def) => {
-    initialStats[def.key] = def.initial;
+    initialStats[def.key] = allocatedStats
+      ? (allocatedStats[def.key] ?? def.initial)
+      : def.initial;
   });
+
+  // 開始チームを取得する
+  const startTeam = TEAM_TABLE.find((t) => t.id === CAREER_CONFIG.START_TEAM_ID)
+    || TEAM_TABLE[0];
 
   _state = {
     // --- 選手情報 ---
     player: {
-      name: playerName,         // 選手名
-      position: position,       // ポジション
-      age: 18,                  // 開始時の年齢
+      name:     playerName,
+      position: position,
+      age:      18,
     },
 
-    // --- 能力値（03_能力設計準拠）---
-    // STAT_DEFINITIONS の initial 値で初期化される
+    // --- 能力値 ---
     stats: initialStats,
 
-    // --- 時間管理 ---
-    year: 1,                    // 現在の年（1〜TOTAL_YEARS）
-    month: 1,                   // 現在の月（1〜12）
-    week: 1,                    // 現在の週（1〜4）
-
-    // --- 資金（06_お金準拠）---
+    // --- 資金 ---
     money: GAME_CONFIG.STARTING_MONEY,
 
     // --- 疲労度（0〜100）---
-    // 100に近いほど故障リスクが高まる
     fatigue: 0,
 
     // --- 成長ポイント（GP）---
-    // トレーニングや試合で獲得し、能力値の上昇に使う
     growthPoints: 0,
+
+    // --- キャリア情報 ---
+    career: {
+      teamId:      startTeam.id,     // 所属チームID
+      teamName:    startTeam.name,   // 所属チーム名
+      teamTier:    startTeam.tier,   // チームTier（1〜5）
+      evaluation:  CAREER_CONFIG.INITIAL_EVALUATION, // 評価値
+      matchIndex:  0,                // 次に行う試合のインデックス（MATCH_SCHEDULE参照）
+      season:      1,                // 現在のシーズン番号
+      transferOffers: [],            // 現在届いている移籍オファー [{ teamId, expiresAfterMatch }]
+      trainedThisMatch: false,       // 次の試合までにトレーニング済みかどうか
+    },
 
     // --- 対戦成績 ---
     record: {
-      totalWins: 0,           // 通算勝利数
-      totalLosses: 0,         // 通算敗北数
-      mvpCount: 0,            // MVP獲得回数
-      localCupWins: 0,        // 地方大会優勝回数
-      nationalCupWins: 0,     // 全国大会優勝回数
-      worldCupWins: 0,        // 世界大会優勝回数
-      matchHistory: [],       // 試合履歴（詳細）
+      totalWins:       0,
+      totalLosses:     0,
+      mvpCount:        0,
+      localCupWins:    0,
+      nationalCupWins: 0,
+      worldCupWins:    0,
+      matchHistory:    [],  // [{ matchIndex, label, win, score, mvp, evalGain }]
     },
-
-    // --- ファン数 ---
-    // 試合の勝敗・内容に応じて増減する
-    fans: 0,
-
-    // --- 進行管理 ---
-    // 今週に行動を実行済みかどうか
-    actionTakenThisWeek: false,
-
-    // 現在スケジュールされている試合（null = 試合なし）
-    currentScheduledMatch: null,
-
-    // ゲームが終了したかどうか
-    isGameOver: false,
-    gameOverReason: null,
-
-    // ゲームが終了（エンディング到達）したかどうか
-    isEnding: false,
 
     // --- 試合中の一時状態（試合画面でのみ使用）---
-    // コート上のプレイヤーX位置（-1.0 〜 +1.0）
-    playerX: 0,
-    // 今の試合のプレー統計（試合終了後にリザルトで表示）
+    playerX: 0,  // コート上X位置（-1.0 〜 +1.0）
     currentMatchStats: {
-      spikeAttempts: 0,   // スパイク試みた回数
-      spikeSuccess: 0,    // スパイク成功回数
-      receiveAttempts: 0, // レシーブ試みた回数
-      receiveSuccess: 0,  // レシーブ成功回数
-      pointContrib: 0,    // 得点への直接貢献数
+      spikeAttempts:   0,
+      spikeSuccess:    0,
+      receiveAttempts: 0,
+      receiveSuccess:  0,
+      blockAttempts:   0,
+      blockSuccess:    0,
+      pointContrib:    0,
     },
+
+    // --- ゲーム終了フラグ ---
+    isGameOver:     false,
+    gameOverReason: null,
+    isEnding:       false,
+    endingId:       null,
   };
 }
 
@@ -113,42 +109,29 @@ function initState(playerName, position) {
 // =============================================================
 
 /**
- * 現在のゲーム状態を返す。
- * 読み取り専用として扱うこと（直接書き換えないこと）。
- *
- * @returns {Object} 現在のゲーム状態
+ * 現在のゲーム状態を返す。読み取り専用として扱うこと。
+ * @returns {Object}
  */
 function getState() {
   return _state;
 }
 
 /**
- * 指定したキーの能力値を返す。
- *
- * @param {string} key - 能力値キー（例: "spike", "strength"）
- * @returns {number} 現在の能力値
+ * 指定した能力値を返す。
+ * @param {string} key
+ * @returns {number}
  */
 function getStat(key) {
   return _state.stats[key];
 }
 
 /**
- * 現在の「時刻」情報をまとめて返す。
- *
- * @returns {{ year, month, week, totalWeeks }} 時刻情報
+ * 疲労状態のラベル・色を返す。
+ * @param {number} fatigue
+ * @returns {{ label: string, color: string }}
  */
-function getTimeInfo() {
-  const totalWeeks =
-    (_state.year - 1) * GAME_CONFIG.MONTHS_PER_YEAR * GAME_CONFIG.WEEKS_PER_MONTH +
-    (_state.month - 1) * GAME_CONFIG.WEEKS_PER_MONTH +
-    _state.week;
-
-  return {
-    year: _state.year,
-    month: _state.month,
-    week: _state.week,
-    totalWeeks,
-  };
+function getFatigueStatus(fatigue) {
+  return FATIGUE_STATUS.find((s) => fatigue <= s.maxFatigue) || FATIGUE_STATUS[FATIGUE_STATUS.length - 1];
 }
 
 // =============================================================
@@ -156,31 +139,23 @@ function getTimeInfo() {
 // =============================================================
 
 /**
- * 指定した能力値に値を加算する。
- * 上限（STAT_MAX）と下限（STAT_MIN）を超えないようにクランプする。
- * isFixed な能力値（身長など）には適用しない。
+ * 指定した能力値に値を加算する。STAT_MAX/STAT_MIN でクランプ。
+ * isFixed な能力値には適用しない。
  *
  * @param {string} key    - 能力値キー
- * @param {number} amount - 加算する量（マイナスで減算）
+ * @param {number} amount - 加算量（負で減算）
  * @returns {number} 実際に変化した量
  */
 function addStat(key, amount) {
-  // isFixed の能力値は変更不可
   const def = STAT_DEFINITIONS.find((d) => d.key === key);
-  if (def && def.isFixed) {
-    console.warn(`[state] ${key} は固定値のため変更できません。`);
-    return 0;
-  }
+  if (def && def.isFixed) return 0;
 
   const before = _state.stats[key];
-  // 上限・下限を超えないようにクランプ
-  const after = Math.max(
+  _state.stats[key] = Math.max(
     GAME_CONFIG.STAT_MIN,
     Math.min(GAME_CONFIG.STAT_MAX, before + amount)
   );
-  _state.stats[key] = after;
-
-  return after - before; // 実際に変化した量を返す
+  return _state.stats[key] - before;
 }
 
 // =============================================================
@@ -189,22 +164,13 @@ function addStat(key, amount) {
 
 /**
  * 所持金を増減させる。
- * 残高が0を下回った場合は 0 にクランプし、ゲームオーバーフラグを立てる。
- *
- * @param {number} amount - 変化量（正で収入、負で支出）
- * @returns {boolean} 支払い成功なら true、資金不足なら false
+ * @param {number} amount - 正で収入、負で支出
+ * @returns {boolean} 残高が0以上なら true
  */
 function changeMoney(amount) {
   _state.money += amount;
-
-  // 資金が尽きたらゲームオーバー
-  if (_state.money <= 0) {
-    _state.money = 0;
-    _state.isGameOver = true;
-    _state.gameOverReason = GAME_OVER_REASONS.NO_MONEY;
-    return false;
-  }
-  return true;
+  if (_state.money < 0) _state.money = 0;
+  return _state.money > 0;
 }
 
 // =============================================================
@@ -212,22 +178,21 @@ function changeMoney(amount) {
 // =============================================================
 
 /**
- * 疲労度を増減させる。
- * 0〜FATIGUE_MAX の範囲にクランプする。
- * 上限を超えた場合は故障フラグを立てる。
+ * 疲労度を増減させる。0〜FATIGUE_MAX にクランプ。
+ * 上限に達した場合は一定確率で故障しゲームオーバーになる。
  *
- * @param {number} amount - 変化量（正で疲労増加、負で回復）
+ * @param {number} amount - 正で増加、負で回復
  * @returns {boolean} 故障が発生した場合は false
  */
 function changeFatigue(amount) {
-  _state.fatigue = Math.max(0, Math.min(GAME_CONFIG.FATIGUE_MAX, _state.fatigue + amount));
+  _state.fatigue = Math.max(
+    0,
+    Math.min(GAME_CONFIG.FATIGUE_MAX, _state.fatigue + amount)
+  );
 
-  // 疲労度が上限に達した場合は故障リスク判定
   if (_state.fatigue >= GAME_CONFIG.FATIGUE_MAX) {
-    // 一定確率（30%）で故障になる
     if (Math.random() < 0.3) {
-      _state.isGameOver = true;
-      _state.gameOverReason = GAME_OVER_REASONS.INJURY;
+      triggerGameOver(GAME_OVER_REASONS.INJURY);
       return false;
     }
   }
@@ -240,89 +205,92 @@ function changeFatigue(amount) {
 
 /**
  * 成長ポイントを加算する。
- *
- * @param {number} amount - 加算するGP数
+ * @param {number} amount
  */
 function addGrowthPoints(amount) {
   _state.growthPoints += Math.max(0, amount);
 }
 
 /**
- * 成長ポイントを消費して能力値を1ポイント上昇させる。
- * GP が足りない場合は何もしない。
- *
- * @param {string} key - 上昇させる能力値キー
- * @returns {{ success: boolean, cost: number }} 成功フラグと消費GP
+ * GP を消費して能力値を1ポイント上昇させる。
+ * @param {string} key - 能力値キー
+ * @returns {{ success: boolean, cost: number }}
  */
 function spendGPToUpgradeStat(key) {
   const currentVal = _state.stats[key];
 
-  // 上限チェック
-  if (currentVal >= GAME_CONFIG.STAT_MAX) {
-    return { success: false, cost: 0 };
-  }
+  if (currentVal >= GAME_CONFIG.STAT_MAX) return { success: false, cost: 0 };
 
-  // 現在の能力値に応じた必要GPをコストテーブルから求める
-  const costEntry = GP_COST_TABLE.find((entry) => currentVal < entry.thresholdBelow);
-  const cost = costEntry ? costEntry.gpCost : 5; // テーブルになければ最大コスト
+  const costEntry = GP_COST_TABLE.find((e) => currentVal < e.thresholdBelow);
+  const cost = costEntry ? costEntry.gpCost : 5;
 
-  // GP が足りない場合は失敗
-  if (_state.growthPoints < cost) {
-    return { success: false, cost };
-  }
+  if (_state.growthPoints < cost) return { success: false, cost };
 
-  // GP を消費して能力値を上げる
   _state.growthPoints -= cost;
   addStat(key, 1);
-
   return { success: true, cost };
 }
 
 // =============================================================
-// 時間の進行
+// キャリア情報の更新
 // =============================================================
 
 /**
- * 1週間進める。
- * 月末・年末の処理は progress.js が担当するため、
- * ここでは純粋に週・月・年のカウントを進めるだけ。
- *
- * @returns {{ monthChanged: boolean, yearChanged: boolean }}
- *   月が変わったか、年が変わったかを返す
+ * 評価値を加算する。
+ * @param {number} amount
  */
-function advanceWeek() {
-  let monthChanged = false;
-  let yearChanged = false;
-
-  // 行動済みフラグをリセット
-  _state.actionTakenThisWeek = false;
-
-  _state.week++;
-
-  // 月をまたぐ場合
-  if (_state.week > GAME_CONFIG.WEEKS_PER_MONTH) {
-    _state.week = 1;
-    _state.month++;
-    monthChanged = true;
-
-    // 年をまたぐ場合
-    if (_state.month > GAME_CONFIG.MONTHS_PER_YEAR) {
-      _state.month = 1;
-      _state.year++;
-      _state.player.age++;
-      yearChanged = true;
-    }
-  }
-
-  return { monthChanged, yearChanged };
+function addEvaluation(amount) {
+  _state.career.evaluation = Math.max(0, _state.career.evaluation + amount);
 }
 
 /**
- * 今週の行動を「実行済み」にマークする。
- * 1週間に1回しか行動できないので、二重実行を防ぐために使う。
+ * 試合インデックスを1進める。
  */
-function markActionTaken() {
-  _state.actionTakenThisWeek = true;
+function advanceMatchIndex() {
+  _state.career.matchIndex++;
+}
+
+/**
+ * チームを移籍させる。
+ * @param {string} teamId - 移籍先チームID
+ */
+function transferToTeam(teamId) {
+  const team = TEAM_TABLE.find((t) => t.id === teamId);
+  if (!team) return;
+  _state.career.teamId   = team.id;
+  _state.career.teamName = team.name;
+  _state.career.teamTier = team.tier;
+  // 移籍後はオファーリストをクリアする
+  _state.career.transferOffers = [];
+}
+
+/**
+ * 移籍オファーを追加する。
+ * @param {{ teamId: string, expiresAfterMatch: number }} offer
+ */
+function addTransferOffer(offer) {
+  // 同チームからの重複オファーは追加しない
+  if (_state.career.transferOffers.some((o) => o.teamId === offer.teamId)) return;
+  _state.career.transferOffers.push(offer);
+}
+
+/**
+ * 期限切れの移籍オファーを削除する。
+ * 試合終了後に呼ぶ。
+ */
+function pruneExpiredOffers() {
+  const idx = _state.career.matchIndex;
+  _state.career.transferOffers = _state.career.transferOffers.filter(
+    (o) => o.expiresAfterMatch > idx
+  );
+}
+
+/**
+ * ジムトレーニング済みフラグを設定する。
+ * @param {boolean} done
+ */
+function setTrainedThisMatch(done) {
+  _state.career.trainedThisMatch = done;
 }
 
 // =============================================================
@@ -330,20 +298,20 @@ function markActionTaken() {
 // =============================================================
 
 /**
- * 試合結果を成績に記録する。
+ * 試合結果を成績・履歴に記録する。
  *
- * @param {Object} result - 試合結果オブジェクト
- * @param {boolean} result.win         - 勝利したか
- * @param {string}  result.matchType   - 試合種別（MATCH_REWARDS のキー）
- * @param {string}  result.opponentName - 対戦相手名
- * @param {string}  result.score       - セットスコア文字列（例: "2-1"）
- * @param {boolean} result.mvp        - MVP獲得したか
+ * @param {Object} result
+ * @param {boolean} result.win
+ * @param {string}  result.matchType
+ * @param {string}  result.label
+ * @param {string}  result.opponentName
+ * @param {string}  result.score
+ * @param {boolean} result.mvp
+ * @param {number}  result.evalGain
  */
 function recordMatchResult(result) {
   if (result.win) {
     _state.record.totalWins++;
-
-    // 試合種別ごとに優勝回数を記録
     if (result.matchType === "local_cup")    _state.record.localCupWins++;
     if (result.matchType === "national_cup") _state.record.nationalCupWins++;
     if (result.matchType === "world_cup")    _state.record.worldCupWins++;
@@ -351,66 +319,17 @@ function recordMatchResult(result) {
     _state.record.totalLosses++;
   }
 
-  // MVP 獲得
-  if (result.mvp) {
-    _state.record.mvpCount++;
-  }
+  if (result.mvp) _state.record.mvpCount++;
 
-  // 試合履歴に追記
   _state.record.matchHistory.push({
-    year: _state.year,
-    month: _state.month,
-    week: _state.week,
-    ...result,
+    matchIndex:   _state.career.matchIndex,
+    label:        result.label || "",
+    win:          result.win,
+    score:        result.score,
+    mvp:          result.mvp,
+    opponentName: result.opponentName,
+    evalGain:     result.evalGain || 0,
   });
-}
-
-// =============================================================
-// ゲームオーバー・エンディング設定
-// =============================================================
-
-/**
- * ゲームオーバー状態にする。
- *
- * @param {string} reason - ゲームオーバー理由（GAME_OVER_REASONS の値）
- */
-function triggerGameOver(reason) {
-  _state.isGameOver = true;
-  _state.gameOverReason = reason;
-}
-
-/**
- * エンディング状態にする（3年終了時）。
- */
-function triggerEnding() {
-  _state.isEnding = true;
-}
-
-// =============================================================
-// 現在スケジュールされている試合の管理
-// =============================================================
-
-/**
- * 今週の試合イベントをセットする。
- *
- * @param {Object|null} matchEvent - ANNUAL_SCHEDULE の要素、またはnull
- */
-function setScheduledMatch(matchEvent) {
-  _state.currentScheduledMatch = matchEvent;
-}
-
-// =============================================================
-// ファン数の更新
-// =============================================================
-
-/**
- * ファン数を増減させる。
- * 0を下回らないようにクランプする。
- *
- * @param {number} amount - 変化量（正で増加、負で減少）
- */
-function changeFans(amount) {
-  _state.fans = Math.max(0, _state.fans + amount);
 }
 
 // =============================================================
@@ -422,18 +341,20 @@ function changeFans(amount) {
  */
 function resetMatchStats() {
   _state.currentMatchStats = {
-    spikeAttempts: 0,
-    spikeSuccess: 0,
+    spikeAttempts:   0,
+    spikeSuccess:    0,
     receiveAttempts: 0,
-    receiveSuccess: 0,
-    pointContrib: 0,
+    receiveSuccess:  0,
+    blockAttempts:   0,
+    blockSuccess:    0,
+    pointContrib:    0,
   };
-  _state.playerX = 0; // コート上のX位置もリセット
+  _state.playerX = 0;
 }
 
 /**
- * スパイク統計を更新する。
- * @param {boolean} success - 成功したか
+ * スパイク統計を記録する。
+ * @param {boolean} success
  */
 function recordSpike(success) {
   _state.currentMatchStats.spikeAttempts++;
@@ -444,8 +365,8 @@ function recordSpike(success) {
 }
 
 /**
- * レシーブ統計を更新する。
- * @param {boolean} success - 成功したか
+ * レシーブ統計を記録する。
+ * @param {boolean} success
  */
 function recordReceive(success) {
   _state.currentMatchStats.receiveAttempts++;
@@ -453,9 +374,19 @@ function recordReceive(success) {
 }
 
 /**
+ * ブロック統計を記録する。
+ * @param {boolean} success
+ */
+function recordBlock(success) {
+  _state.currentMatchStats.blockAttempts++;
+  if (success) {
+    _state.currentMatchStats.blockSuccess++;
+    _state.currentMatchStats.pointContrib++;
+  }
+}
+
+/**
  * プレイヤーのコート上X位置を更新する。
- * PLAYER_MOVE.MIN_X 〜 MAX_X にクランプする。
- *
  * @param {number} dx - 移動量（正で右、負で左）
  */
 function movePlayerX(dx) {
@@ -466,12 +397,43 @@ function movePlayerX(dx) {
 }
 
 // =============================================================
-// デバッグ用ユーティリティ
+// ゲーム終了フラグ
 // =============================================================
 
 /**
- * 現在の状態をコンソールに出力する（開発・デバッグ用）。
+ * ゲームオーバー状態にする。
+ * @param {string} reason - GAME_OVER_REASONS の値
  */
-function debugPrintState() {
-  console.log("[state] 現在のゲーム状態:", JSON.parse(JSON.stringify(_state)));
+function triggerGameOver(reason) {
+  _state.isGameOver     = true;
+  _state.gameOverReason = reason;
+}
+
+/**
+ * エンディング状態にする。
+ * @param {string} endingId - ENDINGS の id
+ */
+function triggerEnding(endingId) {
+  _state.isEnding = true;
+  _state.endingId = endingId;
+}
+
+// =============================================================
+// セーブ・ロード用（save.js から呼ばれる）
+// =============================================================
+
+/**
+ * 現在の状態をそのまま返す（セーブ用）。
+ * @returns {Object}
+ */
+function exportState() {
+  return JSON.parse(JSON.stringify(_state));
+}
+
+/**
+ * 保存データから状態を復元する（ロード用）。
+ * @param {Object} savedState
+ */
+function importState(savedState) {
+  _state = savedState;
 }

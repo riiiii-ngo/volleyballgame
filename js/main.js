@@ -18,14 +18,8 @@
 // ゲーム起動
 // =============================================================
 
-/**
- * ページの読み込みが完了したらゲームを起動する。
- */
 window.addEventListener("DOMContentLoaded", () => {
-  // 全ボタンのイベントを一括登録する
   _registerAllEvents();
-
-  // タイトル画面を表示する（セーブデータのチェックも内部で行う）
   openTitle();
 });
 
@@ -43,7 +37,6 @@ function _registerAllEvents() {
   document.getElementById("btn-continue").addEventListener("click", onContinue);
 
   // --- 選手作成画面 ---
-  // ポジションボタン：タップで選択状態を切り替える
   document.querySelectorAll(".pos-btn").forEach((btn) => {
     btn.addEventListener("click", () => {
       document.querySelectorAll(".pos-btn").forEach((b) => b.classList.remove("selected"));
@@ -52,18 +45,32 @@ function _registerAllEvents() {
   });
   document.getElementById("btn-start-game").addEventListener("click", onStartGame);
 
-  // --- メイン画面 ---
-  document.getElementById("btn-go-training").addEventListener("click", onGoTraining);
-  document.getElementById("btn-go-growth").addEventListener("click", onGoGrowth);
-  document.getElementById("btn-go-match").addEventListener("click", onGoMatch);
-  document.getElementById("btn-next-week").addEventListener("click", onNextWeek);
-  document.getElementById("btn-save").addEventListener("click", onSave);
+  // --- マップ画面：ロケーションボタン（クリックでポップアップ表示）---
+  // ロケーションボタンは uiRenderMap() で動的生成されるため
+  // マップコンテナに委任イベントを登録する
+  const mapBtnContainer = document.getElementById("map-location-btns");
+  if (mapBtnContainer) {
+    mapBtnContainer.addEventListener("click", (e) => {
+      const btn = e.target.closest(".map-loc-btn");
+      if (btn && btn.dataset.locId) {
+        uiOpenMapPopup(btn.dataset.locId); // ui.js
+      }
+    });
+  }
 
-  // --- トレーニング画面 ---
+  // マップポップアップ閉じるボタン
+  document.getElementById("popup-close")?.addEventListener("click", () => {
+    uiCloseMapPopup(); // ui.js
+  });
+
+  // --- ジム（トレーニング）画面 ---
   document.getElementById("btn-training-back").addEventListener("click", onTrainingBack);
 
   // --- 成長画面 ---
   document.getElementById("btn-growth-back").addEventListener("click", onGrowthBack);
+
+  // --- エージェント画面 ---
+  document.getElementById("btn-agent-back").addEventListener("click", onAgentBack);
 
   // --- 試合画面：移動ボタン（ポインターホールド対応）---
   _registerMoveButtons();
@@ -85,16 +92,16 @@ function _registerAllEvents() {
 // タイトル画面のイベント
 // =============================================================
 
-/** 「ニューゲーム」ボタン */
+/** 「NEW GAME」ボタン */
 function onNewGame() {
   openCreate();
 }
 
-/** 「コンティニュー」ボタン */
+/** 「CONTINUE」ボタン */
 function onContinue() {
-  const success = loadGame();
+  const success = loadGame(); // save.js
   if (success) {
-    openMain();
+    openMap();
   } else {
     alert("セーブデータの読み込みに失敗しました。");
   }
@@ -106,7 +113,6 @@ function onContinue() {
 
 /** 「ゲームスタート」ボタン */
 function onStartGame() {
-  // 名前の空欄チェックをする
   const name = document.getElementById("input-name").value.trim();
   if (!name) {
     alert("選手名を入力してください。");
@@ -114,111 +120,141 @@ function onStartGame() {
     return;
   }
 
-  // 選択中のポジションを取得する
   const selectedBtn = document.querySelector(".pos-btn.selected");
   const position    = selectedBtn ? selectedBtn.dataset.position : "エース";
 
-  // 状態を初期化してゲームを開始する
-  initState(name, position);
-  openMain();
+  // 作成画面で振り分けたステータスを取得する
+  const allocatedStats = uiGetCreateStats(); // ui.js
+
+  // ゲーム状態を初期化する
+  initState(name, position, allocatedStats); // state.js
+
+  openMap();
 }
 
 // =============================================================
-// メイン画面のイベント
+// マップ画面のイベント（ポップアップ内ハンドラ）
 // =============================================================
 
-/** 「トレーニング」ボタン */
-function onGoTraining() {
+/**
+ * 自宅「休息」アクション。
+ * ui.js の _getLocationActions から呼ばれる。
+ */
+function onHomeRest() {
+  const result = doTraining("rest"); // career.js（restは疲労回復、トレーニングロックなし）
+
   const state = getState();
-  if (state.actionTakenThisWeek) return;
-  openTraining();
-}
-
-/** 「成長（GP振分）」ボタン */
-function onGoGrowth() {
-  openGrowth();
-}
-
-/** 「試合へ」ボタン */
-function onGoMatch() {
-  const state = getState();
-  if (state.actionTakenThisWeek) return;
-
-  const matchEvent = state.currentScheduledMatch;
-  if (!matchEvent) return;
-
-  // 試合画面を開いてインタラクティブエンジンを起動する
-  openMatch(matchEvent.matchType, matchEvent.label);
-}
-
-/** 「次の週へ」ボタン */
-function onNextWeek() {
-  // progress.js で週を進めて発生イベントを取得する
-  const result = advanceToNextWeek();
-
   if (result.isGameOver) {
-    const state = getState();
     openGameOver(state.gameOverReason);
     return;
   }
 
-  if (result.isEnding) {
-    openEnding(result.endingId);
-    return;
-  }
-
-  // 通常進行：メイン画面を最新状態で再描画する
-  openMain();
+  _showToast(`疲労が回復しました（${result.fatigueDelta}）`);
+  openMap();
 }
 
-/** 「セーブ」ボタン */
+/**
+ * 「セーブ」アクション。
+ * 自宅ポップアップの「セーブ」ボタンおよびトーストから呼ばれる。
+ */
 function onSave() {
-  const success = saveGame();
+  const success = saveGame(); // save.js
   _showToast(success ? "セーブしました" : "セーブに失敗しました", !success);
 }
 
 // =============================================================
-// トレーニング画面のイベント
+// ジム（トレーニング）画面のイベント
 // =============================================================
 
 /**
  * トレーニングカードをクリックしたときの処理。
- * ui.js の uiRenderTrainingCards() からカード生成時に登録される。
+ * ui.js の uiRenderTrainingCards() から登録される。
  *
  * @param {string} trainingId - 選択したトレーニングのID
  */
 function onTrainingCardClick(trainingId) {
-  const result = executeTraining(trainingId);
+  const result = doTraining(trainingId); // career.js
+
+  const state = getState();
+  if (result.isGameOver) {
+    openGameOver(state.gameOverReason);
+    return;
+  }
 
   if (!result.success) {
-    if (result.isGameOver) {
-      openGameOver(result.reason);
-      return;
-    }
     alert(result.reason || "トレーニングを実行できませんでした。");
     return;
   }
 
-  // 成功時：結果を短く通知してメイン画面に戻る
-  const gpMsg   = result.gpGained > 0 ? `\n成長ポイント +${result.gpGained} GP` : "";
-  const warnMsg = result.injuryWarning ? "\n⚠️ 疲労が高いです。休息をお勧めします。" : "";
-  alert(`${result.trainingName} 完了！${gpMsg}${warnMsg}`);
+  const gpMsg   = result.gpGained > 0 ? `　GP +${result.gpGained}` : "";
+  const warnMsg = result.injuryWarning ? "\n⚠ 疲労が高いです。休息をお勧めします。" : "";
+  _showToast(`${result.trainingName} 完了！${gpMsg}${warnMsg}`);
 
-  openMain();
+  openMap();
 }
 
-/** 「もどる」ボタン（トレーニング画面） */
+/** 「マップへ戻る」ボタン（トレーニング画面） */
 function onTrainingBack() {
-  openMain();
+  openMap();
 }
 
 // =============================================================
-// 成長ポイント振り分け画面のイベント
+// 成長ポイント画面のイベント
 // =============================================================
 
-/** 「もどる」ボタン（成長画面） */
+/** 「マップへ戻る」ボタン（成長画面） */
 function onGrowthBack() {
-  openMain();
+  openMap();
+}
+
+// =============================================================
+// エージェント画面のイベント
+// =============================================================
+
+/** 「マップへ戻る」ボタン（エージェント画面） */
+function onAgentBack() {
+  openMap();
+}
+
+/**
+ * 移籍オファーを承諾する。
+ * ui.js の _renderAgentOffers から登録される。
+ *
+ * @param {string} teamId - 移籍先チームID
+ */
+function onAcceptTransferOffer(teamId) {
+  const result = acceptTransferOffer(teamId); // career.js
+
+  if (!result.success) {
+    alert(result.reason || "移籍を承諾できませんでした。");
+    return;
+  }
+
+  const state = getState();
+  alert(`${state.career.teamName} への移籍が完了しました！`);
+
+  // エージェント画面を再描画する
+  uiRenderAgentScreen(); // ui.js
+}
+
+/**
+ * 移籍申請を行う。
+ * ui.js の _renderAgentRequestTargets から登録される。
+ *
+ * @param {string} teamId - 移籍希望先チームID
+ */
+function onRequestTransfer(teamId) {
+  const result = requestTransfer(teamId); // career.js
+
+  if (!result.success) {
+    alert(result.reason || "移籍申請が承認されませんでした。");
+    return;
+  }
+
+  const state = getState();
+  alert(`${state.career.teamName} への移籍が完了しました！`);
+
+  uiRenderAgentScreen(); // ui.js
 }
 
 // =============================================================
@@ -226,9 +262,9 @@ function onGrowthBack() {
 // =============================================================
 
 /**
- * 移動ボタン（◀ ▶）のポインターホールドイベントを登録する。
- * pointerdown で押しっぱなし開始、pointerup/pointerleave で解除。
- * match.js の startMove / stopMove を呼ぶ。
+ * 移動ボタン（◀ ▶）のポインターホールドを登録する。
+ * pointerdown で移動開始、pointerup/pointerleave で停止。
+ * match.js の setMoveLeft / setMoveRight を呼ぶ。
  */
 function _registerMoveButtons() {
   const btnLeft  = document.getElementById("btn-move-left");
@@ -238,45 +274,53 @@ function _registerMoveButtons() {
   btnLeft.addEventListener("pointerdown", (e) => {
     e.preventDefault();
     btnLeft.classList.add("pressed");
-    startMove("left");
+    setMoveLeft(true); // match.js
   });
-  btnLeft.addEventListener("pointerup",    () => { btnLeft.classList.remove("pressed");  stopMove("left");  });
-  btnLeft.addEventListener("pointerleave", () => { btnLeft.classList.remove("pressed");  stopMove("left");  });
+  btnLeft.addEventListener("pointerup",    () => { btnLeft.classList.remove("pressed");  setMoveLeft(false);  });
+  btnLeft.addEventListener("pointerleave", () => { btnLeft.classList.remove("pressed");  setMoveLeft(false);  });
 
   // 右ボタン
   btnRight.addEventListener("pointerdown", (e) => {
     e.preventDefault();
     btnRight.classList.add("pressed");
-    startMove("right");
+    setMoveRight(true); // match.js
   });
-  btnRight.addEventListener("pointerup",    () => { btnRight.classList.remove("pressed"); stopMove("right"); });
-  btnRight.addEventListener("pointerleave", () => { btnRight.classList.remove("pressed"); stopMove("right"); });
+  btnRight.addEventListener("pointerup",    () => { btnRight.classList.remove("pressed"); setMoveRight(false); });
+  btnRight.addEventListener("pointerleave", () => { btnRight.classList.remove("pressed"); setMoveRight(false); });
 }
 
 /** 「AUTO」トグルボタン */
 function onAutoToggle() {
-  const isAuto = toggleAutoMode();
-  uiUpdateAutoButton(isAuto);
+  const isAuto = toggleAutoMode(); // match.js
+  uiUpdateAutoButton(isAuto);     // ui.js
 }
 
 // =============================================================
 // 試合結果画面のイベント
 // =============================================================
 
-/** 「育成画面へ ▶」ボタン */
+/** 「マップへ戻る」ボタン */
 function onResultNext() {
-  // 試合を「今週の行動」として記録する
-  markActionTaken();
+  const btn = document.getElementById("btn-result-next");
+
+  // エンディング pending がある場合はエンディングへ
+  if (btn && btn._pendingEnding) {
+    const endingId = btn._pendingEnding;
+    btn._pendingEnding = null;
+    btn.textContent = "マップへ戻る ▶";
+    openEnding(endingId);
+    return;
+  }
 
   const state = getState();
 
-  // 試合後のゲームオーバーチェック（賞金で資金がゼロになった等）
+  // ゲームオーバー確認
   if (state.isGameOver) {
     openGameOver(state.gameOverReason);
     return;
   }
 
-  openMain();
+  openMap();
 }
 
 // =============================================================
@@ -285,23 +329,22 @@ function onResultNext() {
 
 /** 「もう一度プレイ」ボタン（エンディング・ゲームオーバー共通） */
 function onRestart() {
-  deleteSaveData();
+  deleteSaveData(); // save.js
   openTitle();
 }
 
 // =============================================================
-// トースト通知（セーブ完了などの一時メッセージ）
+// トースト通知
 // =============================================================
 
 /**
- * 画面中央下部に一時的なメッセージを表示する。
- * 1.5秒後に自動でフェードアウトして消える。
+ * 画面下部に一時的なメッセージを表示する。
+ * 2秒後に自動でフェードアウトして消える。
  *
  * @param {string}  message - 表示するメッセージ
  * @param {boolean} isError - true にすると赤背景（エラー用）
  */
 function _showToast(message, isError = false) {
-  // 既存のトーストがあれば先に削除する
   const existing = document.getElementById("toast-message");
   if (existing) existing.remove();
 
@@ -311,11 +354,11 @@ function _showToast(message, isError = false) {
 
   Object.assign(toast.style, {
     position:      "absolute",
-    bottom:        "80px",
+    bottom:        "70px",
     left:          "50%",
     transform:     "translateX(-50%)",
     padding:       "10px 24px",
-    background:    isError ? "rgba(200,40,40,0.95)" : "rgba(26,80,200,0.95)",
+    background:    isError ? "rgba(200,40,40,0.95)" : "rgba(20,80,200,0.95)",
     color:         "#ffffff",
     borderRadius:  "20px",
     fontSize:      "13px",
@@ -329,9 +372,8 @@ function _showToast(message, isError = false) {
 
   document.getElementById("game-container").appendChild(toast);
 
-  // 1.5秒後にフェードアウトして削除する
   setTimeout(() => {
     toast.style.opacity = "0";
     setTimeout(() => toast.remove(), 300);
-  }, 1500);
+  }, 2000);
 }

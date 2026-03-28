@@ -21,9 +21,10 @@
 const SCREEN = {
   TITLE:    "screen-title",
   CREATE:   "screen-create",
-  MAIN:     "screen-main",
+  MAP:      "screen-map",
   TRAINING: "screen-training",
   GROWTH:   "screen-growth",
+  AGENT:    "screen-agent",
   MATCH:    "screen-match",
   RESULT:   "screen-result",
   ENDING:   "screen-ending",
@@ -67,14 +68,14 @@ function showScreen(screenId) {
 function openTitle() {
   const continueBtn = document.getElementById("btn-continue");
   const saveInfoEl  = document.getElementById("save-info");
-  const info        = getSaveInfo();
+  const info        = getSaveInfo(); // save.js
 
   if (info) {
     continueBtn.style.display = "inline-block";
     if (saveInfoEl) {
       const savedDate = new Date(info.savedAt).toLocaleString("ja-JP");
       saveInfoEl.textContent =
-        `${info.playerName}（${info.position}） ${info.year}年目${info.month}月 ／ ${savedDate}`;
+        `${info.playerName} ／ ${info.teamName} ／ 試合${info.matchIndex + 1} ／ ${savedDate}`;
     }
   } else {
     continueBtn.style.display = "none";
@@ -86,7 +87,7 @@ function openTitle() {
 
 /**
  * 選手作成画面を開く。
- * 入力欄・ポジション選択をリセットしてから表示する。
+ * 入力欄・ポジション選択・ステータス振り分けをリセットしてから表示する。
  */
 function openCreate() {
   const nameInput = document.getElementById("input-name");
@@ -98,110 +99,128 @@ function openCreate() {
     btn.classList.toggle("selected", i === 0);
   });
 
+  // ステータス振り分けUIを初期化する
+  uiInitCreateStats(); // ui.js
+
   showScreen(SCREEN.CREATE);
 }
 
 /**
- * メイン育成画面を開く。
- * トップバー・選手カード・カレンダー・次の試合パネルをすべて更新する。
+ * マップ画面（キャリアのハブ）を開く。
+ * トップバー・マップCanvas・ロケーションボタンを更新する。
  */
-function openMain() {
-  const state = getState();
+function openMap() {
+  uiUpdateMapTopbar(); // ui.js
+  uiRenderMap();       // ui.js
 
-  // トップバーを更新する
-  uiUpdateTopbar();
-
-  // 選手カードを更新する
-  uiRenderPlayerCard();
-
-  // 月間カレンダーを描画する
-  uiRenderCalendar();
-
-  // 「次の試合」パネルを更新する
-  uiUpdateNextMatchPanel();
-
-  // 「試合へ」ボタンの有効/無効を設定する
-  uiUpdateMatchButton();
-
-  // 行動済み通知を更新する
-  uiShowActionDoneNotice(state.actionTakenThisWeek);
-
-  showScreen(SCREEN.MAIN);
+  showScreen(SCREEN.MAP);
 }
 
 /**
- * トレーニング選択画面を開く。
- * 現在の状態に応じたトレーニングカードを生成して表示する。
+ * ジム（トレーニング選択）画面を開く。
+ * ui.js から openTraining() として呼ばれることもある。
  */
 function openTraining() {
-  // トレーニング画面のヘッダー（疲労・資金）を更新する
-  uiUpdateTrainingHeader();
-
-  // トレーニングカード一覧を生成する
-  uiRenderTrainingCards();
+  uiUpdateTrainingHeader(); // ui.js
+  uiRenderTrainingCards();  // ui.js
 
   showScreen(SCREEN.TRAINING);
 }
+
+/** openTraining の別名（互換性のため） */
+const openGym = openTraining;
 
 /**
  * 成長ポイント振り分け画面を開く。
  * 現在の能力値とGP残量を表示する。
  */
 function openGrowth() {
-  // 能力値リストを描画する（GP残量更新を含む）
-  uiRenderGrowthStats();
+  uiRenderGrowthStats(); // ui.js
 
   showScreen(SCREEN.GROWTH);
 }
 
 /**
- * 試合画面を開いてインタラクティブ試合エンジンを起動する。
- * Canvas描画ループと入力イベントはこの関数から開始される。
- *
- * @param {string} matchType  - 試合種別（MATCH_REWARDS のキー）
- * @param {string} matchLabel - 試合名（表示用）
+ * エージェント（移籍）画面を開く。
  */
-function openMatch(matchType, matchLabel) {
-  const state = getState();
+function openAgent() {
+  uiRenderAgentScreen(); // ui.js
 
-  // スコアバーに選手名・相手名を仮設定する（initMatch で上書きされる）
-  uiSetMatchNames(state.player.name, matchLabel || "相手チーム");
-
-  // スコアをゼロリセットする
-  updateScoreUI({ mySets: 0, oppSets: 0, myPts: 0, oppPts: 0, setNum: 1 });
-
-  // AUTO ボタンを OFF 状態にリセットする
-  uiUpdateAutoButton(false);
-
-  // フェーズUI を初期状態にリセットする
-  const phaseLabel = document.getElementById("phase-status-label");
-  if (phaseLabel) phaseLabel.textContent = "待機中";
-
-  const cmdBtns = document.getElementById("command-btns");
-  if (cmdBtns) cmdBtns.innerHTML = "";
-
-  // 画面切り替え
-  showScreen(SCREEN.MATCH);
-
-  // 画面表示後にインタラクティブ試合エンジンを初期化する
-  // （Canvas が DOMに配置された後でないと getContext が動作しないため遅延）
-  setTimeout(() => initMatch(matchType), 100);
+  showScreen(SCREEN.AGENT);
 }
 
 /**
- * 試合結果画面を開く。
- * match.js の _endMatch から呼ばれる。
+ * 試合画面を開き、インタラクティブ試合エンジンを起動する。
+ * スタジアムポップアップの「試合へ」ボタンから呼ばれる。
+ * 引数は互換性のために受け取るが、内部では getNextMatch() を使う。
  *
- * @param {Object} result - 試合結果オブジェクト（ui.js の uiRenderResultScreen に渡す形式）
+ * @param {string} [_matchType]  - 未使用（互換性のため）
+ * @param {string} [_matchLabel] - 未使用（互換性のため）
+ */
+function openMatch(_matchType, _matchLabel) {
+  const scheduleEntry = getNextMatch(); // career.js
+  if (!scheduleEntry) {
+    console.warn("[screens] 試合スケジュールが見つかりません。");
+    openMap();
+    return;
+  }
+
+  const opponentEntry = OPPONENT_TABLE[scheduleEntry.matchType];
+  if (!opponentEntry) {
+    console.warn("[screens] 対戦相手テーブルが見つかりません:", scheduleEntry.matchType);
+    openMap();
+    return;
+  }
+
+  // 対戦相手名をランダムに選ぶ
+  const opponentName = opponentEntry.names[
+    Math.floor(Math.random() * opponentEntry.names.length)
+  ];
+
+  const state = getState();
+
+  // スコアバーに名前を設定する
+  uiSetMatchNames(state.player.name, opponentName); // ui.js
+
+  // スコアをゼロリセットする
+  updateScoreUI({ myPts: 0, oppPts: 0, mySets: 0, oppSets: 0, setNum: 1 }); // ui.js
+
+  // AUTO ボタンを OFF 状態にリセットする
+  uiUpdateAutoButton(false); // ui.js
+
+  // フェーズラベル・コマンドボタンをリセットする
+  const phaseLabel = document.getElementById("phase-status-label");
+  if (phaseLabel) phaseLabel.textContent = "待機中";
+  const cmdBtns = document.getElementById("command-btns");
+  if (cmdBtns) cmdBtns.innerHTML = "";
+
+  showScreen(SCREEN.MATCH);
+
+  // Canvas が DOM に配置された後で試合エンジンを起動する
+  setTimeout(() => startMatch(scheduleEntry, opponentEntry, opponentName), 200);
+}
+
+/**
+ * 試合リザルト画面を開く。
+ * match.js の _endMatch() から呼ばれる。
+ *
+ * @param {Object} result - 試合結果オブジェクト
  */
 function openResult(result) {
-  // 試合ループを確実に停止する
-  stopMatchLoop();
-
   // リザルト画面の各要素を描画する
-  uiRenderResultScreen(result);
+  uiRenderResultScreen(result); // ui.js
 
   showScreen(SCREEN.RESULT);
+
+  // エンディング/ゲームオーバーの遅延チェック
+  if (result.isEnding) {
+    // 「マップへ戻る」ボタンをエンディング遷移に差し替える
+    const nextBtn = document.getElementById("btn-result-next");
+    if (nextBtn) {
+      nextBtn.textContent = "エンディングへ ▶";
+      nextBtn._pendingEnding = result.endingId;
+    }
+  }
 }
 
 /**
@@ -212,7 +231,6 @@ function openResult(result) {
 function openEnding(endingId) {
   const ending = ENDINGS.find((e) => e.id === endingId) || ENDINGS[ENDINGS.length - 1];
 
-  // アイコン・タイトル・メッセージを設定する
   const rankEl    = document.getElementById("ending-rank");
   const titleEl   = document.getElementById("ending-title");
   const messageEl = document.getElementById("ending-message");
@@ -221,8 +239,7 @@ function openEnding(endingId) {
   if (titleEl)   titleEl.textContent   = ending.title;
   if (messageEl) messageEl.textContent = ending.message;
 
-  // 3年間の成績まとめを描画する
-  uiRenderEndingStats();
+  uiRenderEndingStats(); // ui.js
 
   showScreen(SCREEN.ENDING);
 }

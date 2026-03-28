@@ -21,7 +21,7 @@
     <div class="title-content">
       <div class="title-ball">🏐</div>
       <h1 class="title-main">VOLLEY<span>RISING</span></h1>
-      <p class="title-sub">バレーボール選手育成キャリアゲーム</p>
+      <p class="title-sub">バレーボール選手キャリアゲーム</p>
       <div class="title-btns">
         <button class="btn-title-primary" id="btn-new-game">NEW GAME</button>
         <button class="btn-title-secondary" id="btn-continue" style="display:none;">CONTINUE</button>
@@ -31,126 +31,129 @@
   </div>
 
   <!-- ==========================================================
-    【画面2】選手作成画面
+    【画面2】選手作成画面（名前・ポジション・ステータス振り分け）
     ========================================================== -->
   <div id="screen-create" class="screen">
-    <div class="create-wrapper">
+    <!-- 左：名前・ポジション -->
+    <div class="create-left">
       <h2 class="create-heading">選手を作成</h2>
+
       <div class="create-form-group">
         <label class="create-label">選手名</label>
         <input type="text" id="input-name" class="create-input"
                placeholder="名前を入力..." maxlength="10">
       </div>
+
       <div class="create-form-group">
         <label class="create-label">ポジション</label>
         <div class="position-grid">
-          <button class="pos-btn selected" data-position="エース">🏐<br>エース</button>
-          <button class="pos-btn" data-position="セッター">🎯<br>セッター</button>
-          <button class="pos-btn" data-position="リベロ">🛡️<br>リベロ</button>
-          <button class="pos-btn" data-position="ミドル">💪<br>ミドル</button>
-          <button class="pos-btn" data-position="オポジット">⚡<br>オポジット</button>
-          <button class="pos-btn" data-position="ウイング">🌪️<br>ウイング</button>
+          <button class="pos-btn selected" data-position="エース">🏐<br><span>エース</span></button>
+          <button class="pos-btn" data-position="セッター">🎯<br><span>セッター</span></button>
+          <button class="pos-btn" data-position="リベロ">🛡️<br><span>リベロ</span></button>
+          <button class="pos-btn" data-position="ミドル">💪<br><span>ミドル</span></button>
+          <button class="pos-btn" data-position="オポジット">⚡<br><span>オポジット</span></button>
+          <button class="pos-btn" data-position="ウイング">🌪️<br><span>ウイング</span></button>
         </div>
       </div>
+
       <button class="btn-start" id="btn-start-game">ゲームスタート ▶</button>
     </div>
+
+    <!-- 右：ステータス振り分け -->
+    <div class="create-right">
+      <div class="create-stat-header">
+        <span class="create-stat-title">ステータス振り分け</span>
+        <span class="create-points-badge">
+          残り <span id="create-points-remain">60</span> pt
+        </span>
+      </div>
+
+      <!-- 体格（身長のみ・スライダー） -->
+      <div class="create-stat-section">
+        <div class="create-stat-section-label">体格</div>
+        <div class="create-stat-row" id="create-row-height">
+          <span class="create-stat-name">身長</span>
+          <input type="range" class="create-slider" id="slider-height"
+                 min="160" max="210" step="1" value="175">
+          <span class="create-stat-display" id="display-height">175 cm</span>
+        </div>
+      </div>
+
+      <!-- 基礎能力 -->
+      <div class="create-stat-section">
+        <div class="create-stat-section-label">基礎能力</div>
+        <div id="create-stats-basic"><!-- js側で生成 --></div>
+      </div>
+
+      <!-- プレー能力 -->
+      <div class="create-stat-section">
+        <div class="create-stat-section-label">プレー能力</div>
+        <div id="create-stats-play"><!-- js側で生成 --></div>
+      </div>
+    </div>
   </div>
 
   <!-- ==========================================================
-    【画面3】メイン育成ダッシュボード
+    【画面3】マップ画面（キャリアのハブ）
     ========================================================== -->
-  <div id="screen-main" class="screen">
-    <!-- トップバー -->
+  <div id="screen-map" class="screen">
+    <!-- トップバー：チーム・評価・資金 -->
     <div class="topbar">
       <div class="topbar-left">
-        <span class="topbar-name" id="main-player-name">選手名</span>
-        <span class="topbar-pos" id="main-position">エース</span>
+        <span class="topbar-name" id="map-player-name">選手名</span>
+        <span class="topbar-pos" id="map-position">ACE</span>
+        <span class="topbar-team" id="map-team-name">チーム名</span>
       </div>
-      <div class="topbar-center" id="main-progress-text">1年目 1月 第1週</div>
+      <div class="topbar-center" id="map-progress-text">試合 1 / 22</div>
       <div class="topbar-right">
-        <span class="topbar-fans" id="main-fans">👥 0</span>
-        <span class="topbar-money" id="main-money">¥500,000</span>
+        <span class="topbar-eval" id="map-evaluation">評価 0</span>
+        <span class="topbar-money" id="map-money">¥500,000</span>
       </div>
     </div>
 
-    <!-- ダッシュボード本体（左右2カラム） -->
-    <div class="dashboard">
-      <!-- 左：選手カード -->
-      <div class="player-card">
-        <div class="card-position-badge" id="card-position-badge">ACE</div>
-        <div class="card-stats" id="card-stats"><!-- js側で生成 --></div>
-        <div class="card-condition">
-          <div class="cond-row">
-            <span class="cond-label">疲労度</span>
-            <div class="cond-bar-bg">
-              <div class="cond-bar-fill fatigue" id="card-fatigue-bar"></div>
-            </div>
-            <span class="cond-val" id="card-fatigue-val">良好</span>
-          </div>
-          <div class="cond-row">
-            <span class="cond-label">成長GP</span>
-            <span class="cond-gp" id="card-gp">0 GP</span>
-          </div>
-        </div>
-        <div class="card-record" id="card-record"><!-- js側で生成 --></div>
+    <!-- マップ本体（Canvas） -->
+    <div class="map-canvas-wrapper">
+      <canvas id="map-canvas" width="800" height="510"></canvas>
+      <!-- マップロケーションボタン（Canvas上に重ねる） -->
+      <div class="map-location-btns" id="map-location-btns">
+        <!-- js側で MAP_LOCATIONS を基に生成 -->
       </div>
+    </div>
 
-      <!-- 右：情報＋メニュー -->
-      <div class="dashboard-right">
-        <!-- 次の試合予告 -->
-        <div class="next-match-panel">
-          <div class="panel-title">📅 次の試合</div>
-          <div class="next-match-info" id="next-match-info">試合なし</div>
-        </div>
-        <!-- 今月カレンダー -->
-        <div class="calendar-panel">
-          <div class="panel-title">今月スケジュール</div>
-          <div class="calendar-weeks" id="main-calendar"><!-- js側で生成 --></div>
-        </div>
-        <!-- アクションメニュー -->
-        <div class="action-menu">
-          <button class="menu-btn" id="btn-go-training">
-            <span class="menu-icon">💪</span>トレーニング
-          </button>
-          <button class="menu-btn" id="btn-go-growth">
-            <span class="menu-icon">📈</span>成長（GP）
-          </button>
-          <button class="menu-btn match-btn" id="btn-go-match" disabled>
-            <span class="menu-icon">🏆</span>試合へ
-          </button>
-          <button class="menu-btn" id="btn-next-week">
-            <span class="menu-icon">⏭️</span>次の週へ
-          </button>
-          <button class="menu-btn save-btn" id="btn-save">
-            <span class="menu-icon">💾</span>セーブ
-          </button>
-        </div>
-        <div id="action-done-notice" class="action-done-notice" style="display:none;">
-          今週の行動は完了しました。「次の週へ」で進んでください。
-        </div>
+    <!-- ロケーションメニューポップアップ -->
+    <div class="map-popup" id="map-popup" style="display:none;">
+      <div class="map-popup-header">
+        <span class="map-popup-icon" id="popup-icon">🏠</span>
+        <span class="map-popup-title" id="popup-title">自宅</span>
+        <button class="map-popup-close" id="popup-close">✕</button>
+      </div>
+      <div class="map-popup-desc" id="popup-desc">説明文</div>
+      <div class="map-popup-actions" id="popup-actions">
+        <!-- js側でロケーションごとに生成 -->
       </div>
     </div>
   </div>
 
   <!-- ==========================================================
-    【画面4】トレーニング選択
+    【画面4】ジム（トレーニング選択）
     ========================================================== -->
   <div id="screen-training" class="screen">
     <div class="topbar">
-      <div class="topbar-left">💪 トレーニング選択</div>
+      <div class="topbar-left">🏋️ ジム</div>
       <div class="topbar-right">
+        <span id="training-fatigue-label" class="topbar-fatigue">良好</span>
         <span class="topbar-money" id="training-money">¥500,000</span>
       </div>
     </div>
     <div class="training-screen-body">
       <div class="training-fatigue-row">
-        疲労：<span id="training-fatigue-label" class="fatigue-label-text">良好</span>
-        （<span id="training-fatigue-val">0</span>）
+        疲労：<span id="training-fatigue-label2" class="fatigue-label-text">良好</span>
+        （<span id="training-fatigue-val">0</span> / 100）
       </div>
       <div class="training-grid" id="training-card-list"><!-- js側で生成 --></div>
     </div>
     <div class="bottom-bar">
-      <button class="bbar-btn" id="btn-training-back">◀ もどる</button>
+      <button class="bbar-btn" id="btn-training-back">◀ マップへ戻る</button>
     </div>
   </div>
 
@@ -179,54 +182,92 @@
       </div>
     </div>
     <div class="bottom-bar">
-      <button class="bbar-btn" id="btn-growth-back">◀ もどる</button>
+      <button class="bbar-btn" id="btn-growth-back">◀ マップへ戻る</button>
     </div>
   </div>
 
   <!-- ==========================================================
-    【画面6】試合画面（Canvas 2.5Dコート＋操作UI）
+    【画面6】エージェント（移籍）
+    ========================================================== -->
+  <div id="screen-agent" class="screen">
+    <div class="topbar">
+      <div class="topbar-left">🏢 エージェント</div>
+      <div class="topbar-right">
+        <span class="topbar-eval" id="agent-evaluation">評価 0</span>
+      </div>
+    </div>
+    <div class="agent-body">
+      <!-- 現在のチーム情報 -->
+      <div class="agent-section">
+        <div class="agent-section-title">現在の所属チーム</div>
+        <div class="agent-current-team" id="agent-current-team">
+          <!-- js側で生成 -->
+        </div>
+      </div>
+      <!-- 移籍オファー -->
+      <div class="agent-section">
+        <div class="agent-section-title">移籍オファー</div>
+        <div id="agent-offers"><!-- js側で生成 --></div>
+      </div>
+      <!-- 移籍申請 -->
+      <div class="agent-section">
+        <div class="agent-section-title">移籍申請</div>
+        <div class="agent-section-note">評価値が高いほど上位チームへ申請できます</div>
+        <div id="agent-request-targets"><!-- js側で生成 --></div>
+      </div>
+    </div>
+    <div class="bottom-bar">
+      <button class="bbar-btn" id="btn-agent-back">◀ マップへ戻る</button>
+    </div>
+  </div>
+
+  <!-- ==========================================================
+    【画面7】試合画面（Canvas 後方視点コート＋フェーズUI）
     ========================================================== -->
   <div id="screen-match" class="screen">
 
     <!-- スコアバー（上部） -->
     <div class="match-scorebar">
-      <div class="score-team my-team">
+      <div class="score-team">
         <span class="score-team-name" id="match-my-name">あなた</span>
-        <span class="score-sets" id="match-my-sets">0</span>
+        <span class="score-sets my-sets" id="match-my-sets">0</span>
       </div>
       <div class="score-center">
         <div class="score-points">
-          <span class="score-pt my-pt" id="match-my-pt">0</span>
+          <span class="score-pt my-pt"  id="match-my-pt">0</span>
           <span class="score-sep">―</span>
           <span class="score-pt opp-pt" id="match-opp-pt">0</span>
         </div>
         <div class="score-set-label" id="match-set-label">第1セット</div>
       </div>
-      <div class="score-team opp-team">
-        <span class="score-sets" id="match-opp-sets">0</span>
-        <span class="score-team-name" id="match-opp-name">相手チーム</span>
+      <div class="score-team">
+        <span class="score-sets opp-sets" id="match-opp-sets">0</span>
+        <span class="score-team-name"    id="match-opp-name">相手チーム</span>
       </div>
     </div>
 
-    <!-- Canvas コート描画エリア -->
+    <!-- Canvas コート（後方視点 2.5D） -->
     <div class="court-canvas-wrapper">
-      <canvas id="match-canvas" width="800" height="300"></canvas>
-      <!-- フェーズ名オーバーレイ（画面上に一時表示） -->
+      <canvas id="match-canvas" width="800" height="420"></canvas>
+      <!-- フェーズ名フラッシュオーバーレイ -->
       <div class="phase-overlay" id="phase-overlay" style="display:none;">
         <span id="phase-overlay-text">SPIKE!</span>
       </div>
     </div>
 
-    <!-- 下部操作UI（07_UI仕様準拠・スマホ対応） -->
+    <!-- 操作UI（下部）：左=移動, 中=フェーズ状態, 右=コマンド -->
     <div class="match-controls">
-      <!-- 左：移動ボタン -->
+
+      <!-- 左：← → 移動ボタン（RECEIVE/BLOCK フェーズで使用） -->
       <div class="move-controls">
-        <button class="move-btn" id="btn-move-left">◀</button>
-        <div class="move-label">移動</div>
-        <button class="move-btn" id="btn-move-right">▶</button>
+        <button class="move-btn" id="btn-move-left"
+                ontouchstart="return false;">◀</button>
+        <div class="move-label">ポジション移動</div>
+        <button class="move-btn" id="btn-move-right"
+                ontouchstart="return false;">▶</button>
       </div>
 
-      <!-- 中央：フェーズ状態＋オート -->
+      <!-- 中央：現在フェーズ名 + AUTO トグル -->
       <div class="match-status-center">
         <div class="phase-status-label" id="phase-status-label">待機中</div>
         <button class="auto-toggle-btn" id="btn-auto-toggle">
@@ -234,30 +275,32 @@
         </button>
       </div>
 
-      <!-- 右：コマンドボタン（フェーズに応じて変化） -->
-      <div class="command-btns" id="command-btns">
-        <!-- js側でフェーズに応じて生成 -->
-      </div>
+      <!-- 右：コマンドボタン（フェーズに応じて js 側で生成） -->
+      <div class="command-btns" id="command-btns"></div>
+
     </div>
   </div>
 
   <!-- ==========================================================
-    【画面7】試合リザルト（達成感のある演出）
+    【画面8】試合リザルト
     ========================================================== -->
   <div id="screen-result" class="screen">
     <div class="result-wrapper">
-      <!-- グレード（大きく） -->
+
+      <!-- グレード（大きく中央） -->
       <div class="result-grade-area">
         <div class="result-grade" id="result-grade">A</div>
         <div class="result-grade-msg" id="result-grade-msg">素晴らしいプレーだった！</div>
       </div>
-      <!-- 試合情報 -->
+
+      <!-- 試合情報（勝敗バッジ・スコア・相手名） -->
       <div class="result-match-header">
-        <span class="win-badge" id="result-win-badge">勝利</span>
+        <span class="win-badge win" id="result-win-badge">勝利</span>
         <span class="result-score-text" id="result-score-text">2 - 1</span>
         <span class="vs-text" id="result-vs-text">vs. 相手チーム</span>
       </div>
-      <!-- プレー統計 -->
+
+      <!-- プレー統計（スパイク・レシーブ・ブロック成功率） -->
       <div class="result-stats-row">
         <div class="result-stat-item">
           <div class="rs-label">スパイク成功率</div>
@@ -268,33 +311,50 @@
           <div class="rs-value" id="result-receive-rate">--%</div>
         </div>
         <div class="result-stat-item">
+          <div class="rs-label">ブロック成功率</div>
+          <div class="rs-value" id="result-block-rate">--%</div>
+        </div>
+        <div class="result-stat-item">
           <div class="rs-label">得点貢献</div>
           <div class="rs-value" id="result-contrib">0点</div>
         </div>
       </div>
-      <!-- 報酬 -->
-      <div class="result-rewards-panel" id="result-rewards-panel"><!-- js側で生成 --></div>
-      <!-- MVP -->
+
+      <!-- 評価値獲得 -->
+      <div class="result-eval-gain" id="result-eval-gain">
+        評価 <span id="result-eval-val">+0</span>
+      </div>
+
+      <!-- 報酬パネル（賞金・GP・月給） -->
+      <div class="result-rewards-panel" id="result-rewards-panel"></div>
+
+      <!-- MVP バッジ -->
       <div class="mvp-badge" id="mvp-badge" style="display:none;">🏅 MVP 獲得！</div>
-      <button class="btn-result-next" id="btn-result-next">育成画面へ ▶</button>
+
+      <!-- 移籍オファー通知 -->
+      <div class="result-offer-notice" id="result-offer-notice" style="display:none;">
+        📨 移籍オファーが届いています！エージェントを確認してください。
+      </div>
+
+      <button class="btn-result-next" id="btn-result-next">マップへ戻る ▶</button>
     </div>
   </div>
 
   <!-- ==========================================================
-    【画面8】エンディング
+    【画面9】エンディング
     ========================================================== -->
   <div id="screen-ending" class="screen">
     <div class="ending-wrapper">
       <div class="ending-icon" id="ending-rank">🏆</div>
-      <div class="ending-title" id="ending-title">世界チャンピオン</div>
-      <div class="ending-msg" id="ending-message">世界大会を制した！</div>
+      <div class="ending-title"   id="ending-title">世界チャンピオン</div>
+      <div class="ending-msg"     id="ending-message">世界大会を制した！</div>
       <div class="ending-stats-box" id="ending-stats"></div>
       <button class="btn-restart" id="btn-restart-from-ending">もう一度プレイ</button>
     </div>
   </div>
 
   <!-- ==========================================================
-    【画面9】ゲームオーバー
+    【画面10】ゲームオーバー
     ========================================================== -->
   <div id="screen-gameover" class="screen">
     <div class="gameover-wrapper">
@@ -307,16 +367,14 @@
 
 </div><!-- /#game-container -->
 
-<!-- JS読み込み（依存順） -->
+<!-- JS読み込み（依存順：data→state→save→career→match→ui→screens→main） -->
 <script src="js/data.js"></script>
 <script src="js/state.js"></script>
 <script src="js/save.js"></script>
-<script src="js/economy.js"></script>
-<script src="js/training.js"></script>
+<script src="js/career.js"></script>
 <script src="js/match.js"></script>
-<script src="js/progress.js"></script>
-<script src="js/screens.js"></script>
 <script src="js/ui.js"></script>
+<script src="js/screens.js"></script>
 <script src="js/main.js"></script>
 
 </body>
